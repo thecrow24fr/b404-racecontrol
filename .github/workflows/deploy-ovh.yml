@@ -1,0 +1,107 @@
+name: Deploy static site to OVH
+
+on:
+  push:
+    branches:
+      - main
+      - ovh-static
+  workflow_dispatch:
+
+concurrency:
+  group: ovh-static-deploy
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    name: Build and deploy out/ to OVH
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      OVH_HOST: ${{ secrets.OVH_HOST }}
+      OVH_PORT: ${{ secrets.OVH_PORT }}
+      OVH_USERNAME: ${{ secrets.OVH_USERNAME }}
+      OVH_PASSWORD: ${{ secrets.OVH_PASSWORD }}
+      OVH_TARGET_DIR: ${{ secrets.OVH_TARGET_DIR }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build static export
+        run: npm run build
+
+      - name: Verify static export
+        shell: bash
+        run: |
+          test -d out
+          test -f out/index.html
+          test "$(find out -mindepth 1 -maxdepth 1 | wc -l)" -gt 0
+          echo "Static export generated:"
+          du -sh out
+          find out -maxdepth 2 -type f | sort | sed -n '1,80p'
+
+      - name: Show deployment paths
+        shell: bash
+        run: |
+          echo "Workspace: $(pwd)"
+          echo "Local deployment directory:"
+          realpath ./out
+          ls -la ./out | sed -n '1,80p'
+          echo "Remote deployment directory is provided by OVH_TARGET_DIR."
+
+      - name: Check OVH SFTP secrets
+        shell: bash
+        run: |
+          missing=0
+
+          check_secret() {
+            local name="$1"
+            local value="$2"
+
+            if [ -n "$value" ]; then
+              echo "$name present: yes"
+            else
+              echo "$name present: no"
+              missing=1
+            fi
+          }
+
+          check_secret "OVH_HOST" "$OVH_HOST"
+          check_secret "OVH_PORT" "$OVH_PORT"
+          check_secret "OVH_USERNAME" "$OVH_USERNAME"
+          check_secret "OVH_PASSWORD" "$OVH_PASSWORD"
+          check_secret "OVH_TARGET_DIR" "$OVH_TARGET_DIR"
+
+          if [ "$missing" -ne 0 ]; then
+            echo "One or more OVH SFTP secrets are missing. Configure them in GitHub repository settings before deploying."
+            exit 1
+          fi
+
+      # SFTP deployment uses only GitHub Secrets.
+      # Required secrets:
+      # - OVH_HOST: OVH SFTP host, for example ftp.clusterXXX.hosting.ovh.net
+      # - OVH_PORT: OVH SFTP port, usually 22
+      # - OVH_USERNAME: OVH FTP/SFTP username
+      # - OVH_PASSWORD: OVH FTP/SFTP password
+      # - OVH_TARGET_DIR: remote target directory, usually /www
+      - name: Install lftp
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lftp
+
+      - name: Deploy to OVH
+        run: |
+          lftp -u "${{ secrets.OVH_USERNAME }},${{ secrets.OVH_PASSWORD }}" sftp://${{ secrets.OVH_HOST }}:${{ secrets.OVH_PORT }} <<EOF
+          set sftp:auto-confirm yes
+          mirror -R --delete --verbose ./out ${{ secrets.OVH_TARGET_DIR }}
+          bye
+          EOF
