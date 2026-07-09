@@ -1,5 +1,6 @@
 "use client";
 
+import { Timer } from "lucide-react";
 import { HeroVideo } from "./hero-video";
 
 export function HeroSection() {
@@ -38,18 +39,35 @@ export function HeroSection() {
             acc&eacute;dez au Live Timing.
           </p>
 
-          {/* Boutons CTA */}
-          <div className="animate-fade-up animate-delay-300 mt-9 flex flex-wrap justify-center gap-4">
+          {/* Bouton principal Live Timing */}
+          <div className="animate-fade-up animate-delay-300 mx-auto mt-10 max-w-md">
+            <a
+              href="https://live.b404ldc.fr"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="group relative inline-flex w-full items-center justify-center gap-3 rounded-full bg-orange-500 px-8 py-4 text-base font-bold shadow-2xl shadow-orange-500/30 transition-all duration-300 hover:scale-[1.04] hover:bg-orange-400 hover:shadow-orange-400/50 active:scale-95 sm:px-10 sm:py-4 sm:text-lg"
+            >
+              <Timer className="h-5 w-5 transition group-hover:rotate-[8deg]" />
+              <span>Acc&eacute;der au Live Timing</span>
+              <span className="absolute inset-0 rounded-full bg-white/10 opacity-0 transition group-hover:opacity-100" />
+            </a>
+            <p className="mt-3 text-xs leading-5 text-gray-500">
+              Suivez les sessions rFactor 2 en direct, les temps au tour et
+              le classement en temps r&eacute;el.
+            </p>
+          </div>
+
+          {/* Boutons secondaires */}
+          <div className="animate-fade-up animate-delay-400 mt-8 flex flex-wrap justify-center gap-4">
             <a
               href="#servers"
-              className="group relative rounded-full bg-orange-500 px-6 py-3 font-bold shadow-xl shadow-orange-500/20 transition hover:-translate-y-0.5 hover:bg-orange-400"
+              className="rounded-full border border-white/15 bg-white/5 px-5 py-2.5 text-sm font-bold transition hover:-translate-y-0.5 hover:border-orange-300 hover:bg-white/10 hover:text-orange-200"
             >
-              Live Timing
-              <span className="absolute inset-0 rounded-full bg-white/10 opacity-0 transition group-hover:opacity-100" />
+              Voir les serveurs
             </a>
             <a
               href="#about"
-              className="rounded-full border border-white/15 bg-white/5 px-6 py-3 font-bold transition hover:-translate-y-0.5 hover:border-orange-300 hover:bg-white/10 hover:text-orange-200"
+              className="rounded-full border border-white/15 bg-white/5 px-5 py-2.5 text-sm font-bold transition hover:-translate-y-0.5 hover:border-orange-300 hover:bg-white/10 hover:text-orange-200"
             >
               Calendrier
             </a>
@@ -81,4 +99,3 @@ export function HeroSection() {
     </section>
   );
 }
-

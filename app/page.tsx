@@ -13,6 +13,57 @@ export default function Home() {
       <main id="top">
         <HeroSection />
         <ServersSection />
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
         <AboutSection />
       </main>
 
