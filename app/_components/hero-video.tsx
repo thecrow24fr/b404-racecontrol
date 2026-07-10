@@ -87,8 +87,8 @@ export function HeroVideo() {
         playsInline
         preload="auto"
         className={`absolute inset-0 h-full w-full object-cover opacity-0 transition-opacity duration-700 ${
-          isLoaded ? "opacity-60" : ""
-        }`}
+          isLoaded ? "opacity-80" : ""
+        } ${isLoaded ? "animate-ken-burns" : ""}`}
       >
         {/* Format universel (H.264) — à privilégier */}
         <source src="/videos/hero.mp4" type="video/mp4" />
@@ -107,10 +107,11 @@ export function HeroVideo() {
 
       {/* Overlay sombre pour la lisibilité */}
       <div
-        className={`absolute inset-0 bg-gradient-to-b from-[#06101d]/85 via-transparent to-[#06101d]/90 transition-opacity duration-700 ${
+        className={`absolute inset-0 bg-gradient-to-b from-[#06101d]/60 via-transparent to-[#06101d]/70 transition-opacity duration-700 ${
           isLoaded ? "opacity-100" : "opacity-0"
         }`}
       />
     </>
   );
 }
+

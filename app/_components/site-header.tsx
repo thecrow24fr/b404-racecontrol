@@ -40,7 +40,7 @@ export function SiteHeader() {
             &Agrave; propos
           </a>
           <a
-            href="https://b404.fr"
+            href="https://b404ldc.fr"
             target="_blank"
             rel="noopener noreferrer"
             className="rounded-full border border-orange-400/40 px-4 py-2 text-orange-200 transition hover:border-orange-300 hover:bg-orange-500/10"

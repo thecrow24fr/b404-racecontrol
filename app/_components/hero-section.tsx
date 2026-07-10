@@ -10,7 +10,7 @@ export function HeroSection() {
       <HeroVideo />
 
       {/* Dégradé de fond (deuxième couche) — la vidéo est visible en transparence */}
-      <div className="absolute inset-0 bg-[radial-gradient(circle_at_15%_0%,rgba(255,122,0,0.22),transparent_34%),linear-gradient(180deg,rgba(6,16,29,0.75)_0%,rgba(8,20,36,0.88)_100%)]" />
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_15%_0%,rgba(255,122,0,0.22),transparent_34%),linear-gradient(180deg,rgba(6,16,29,0.60)_0%,rgba(8,20,36,0.75)_100%)]" />
 
       {/* Éléments décoratifs animés (troisième couche) */}
       <div className="pointer-events-none absolute inset-0 overflow-hidden">
@@ -19,7 +19,7 @@ export function HeroSection() {
         <div className="animate-breathe absolute left-1/2 top-1/3 h-32 w-32 rounded-full bg-orange-400/10 blur-3xl" style={{ animationDelay: "1s" }} />
       </div>
 
-      <div className="relative mx-auto flex min-h-[calc(100vh-76px)] max-w-7xl flex-col items-center justify-center px-6 py-20 text-center">
+      <div className="relative mx-auto flex min-h-[100dvh] max-w-7xl flex-col items-center justify-center px-6 py-20 text-center">
         <div className="max-w-3xl">
           {/* Badge */}
           <p className="animate-fade-up mb-5 inline-flex rounded-full border border-orange-400/25 bg-orange-500/10 px-4 py-2 text-xs font-black uppercase tracking-[0.28em] text-orange-200">
