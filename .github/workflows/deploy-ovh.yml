@@ -98,10 +98,18 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y lftp
 
-      - name: Deploy to OVH
+            - name: Deploy to OVH
         run: |
           lftp -u "${{ secrets.OVH_USERNAME }},${{ secrets.OVH_PASSWORD }}" sftp://${{ secrets.OVH_HOST }}:${{ secrets.OVH_PORT }} <<EOF
           set sftp:auto-confirm yes
+
+          # Deploiement du site statique (export Next.js)
+          # --delete : supprime les fichiers distants qui n'existent plus dans ./out
           mirror -R --delete --verbose ./out ${{ secrets.OVH_TARGET_DIR }}
+
+          # Deploiement de l'API email (sans --delete pour conserver les fichiers runtime)
+          # Les fichiers generes (email-errors.log, .rate-*) ne sont pas supprimes
+          mirror -R --verbose ./api ${{ secrets.OVH_TARGET_DIR }}/api
+
           bye
           EOF
