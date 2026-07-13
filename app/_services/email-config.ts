@@ -1,21 +1,26 @@
 /**
- * Configuration SMTP pour l'envoi des emails.
+ * Configuration du service d'envoi d'email.
  *
- * Actuellement en mode debug : les emails sont logs dans la console.
- * Lors du deploiement sur b404-site avec SMTP OVH :
- *   1. Creer un fichier .env.local avec les variables ci-dessous
- *   2. Remplacer le contenu de email.ts par la version SMTP OVH
- *   3. Decommenter l'appel a sendEmail() dans contact-form.tsx
+ * Cette API est le service technique commun a tous les projets B404.
+ * Hebergee sur le sous-domaine RaceControl (racecontrol.b404ldc.fr).
+ * Utilisee par b404-racecontrol et b404-site.
  *
- * Variables d'environnement attendues par la version SMTP OVH :
- *   SMTP_HOST=smtp.ovh.net
- *   SMTP_PORT=465
- *   SMTP_USER=contact@b404ldc.fr
- *   SMTP_PASS=xxxxxxxx
- *   SMTP_FROM=B404 RaceControl <noreply@b404ldc.fr>
+ * MODE DEBUG (par defaut) :
+ *   - Aucun appel reseau : les emails sont logs dans la console
+ *   - Delai simule de 1.2s
+ *   - Utilise en developpement local
+ *
+ * MODE PRODUCTION :
+ *   1. Basculer debug = false
+ *   2. Copier api/email.php dans /api/email.php du sous-domaine
+ *      racecontrol.b404ldc.fr
+ *   3. Aucune autre modification necessaire
  */
 
 export const emailConfig = {
-  /** Mode debug : true = log console, false = envoi SMTP OVH */
-  debug: true,
+  /** Mode debug : true = log console, false = envoi via API PHP */
+  debug: false,
+
+  /** URL de l'API PHP d'envoi d'email (uniquement si debug = false) */
+  apiUrl: "https://racecontrol.b404ldc.fr/api/email.php",
 } as const;
