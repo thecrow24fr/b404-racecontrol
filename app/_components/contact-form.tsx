@@ -6,6 +6,8 @@ import type {
   ContactFormData,
   ModalStep,
 } from "../_types/contact";
+import { getRecipientConfig, buildEmailBody } from "./contact-config";
+import { sendEmail } from "../_services/email";
 import { ContactField } from "./contact-field";
 
 interface ContactFormProps {
@@ -108,29 +110,27 @@ export function ContactForm({
 
       setIsSubmitting(true);
 
-      // SPRINT SMTP : decommenter le bloc ci-dessous et supprimer le setTimeout
-      //
-      // import { getRecipientConfig, buildEmailBody } from "./contact-config";
-      // import { sendEmail } from "../_services/email";
-      //
-      // const recipient = getRecipientConfig(category.id);
-      // if (!recipient) {
-      //   console.error("Aucun destinataire pour la categorie", category.id);
-      //   setIsSubmitting(false);
-      //   return;
-      // }
-      //
-      // const replyTo = formData["email"]?.trim() || "";
-      // const body = buildEmailBody(category, formData);
-      //
-      // await sendEmail({
-      //   from: recipient.from,
-      //   to: recipient.to,
-      //   subject: recipient.subject,
-      //   html: body,
-      //   replyTo: replyTo || undefined,
-      // });
-      await new Promise((resolve) => setTimeout(resolve, 1200));
+      // Construire l'email et l'envoyer via le service email
+      const recipient = getRecipientConfig(category.id);
+      if (!recipient) {
+        console.error(
+          "Aucun destinataire pour la categorie",
+          category.id
+        );
+        setIsSubmitting(false);
+        return;
+      }
+
+      const replyTo = formData["email"]?.trim() || "";
+      const body = buildEmailBody(category, formData);
+
+      await sendEmail({
+        from: recipient.from,
+        to: recipient.to,
+        subject: recipient.subject,
+        html: body,
+        replyTo: replyTo || undefined,
+      });
 
       setIsSubmitting(false);
       onStepChange("success");
