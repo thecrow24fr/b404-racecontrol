@@ -19,7 +19,15 @@ import { useEffect, useRef, useCallback } from "react";
  *   analyze()              - Analyse détaillée des coûts
  */
 
-// État des toggles
+/**
+ * Securise l'acces a className (les SVG renvoient SVGAnimatedString).
+ */
+function getClassNames(el: Element): string {
+  const cn = (el as any).className;
+  if (typeof cn === "string") return cn;
+  if (cn && typeof cn.baseVal === "string") return cn.baseVal;
+  return "";
+}
 const state = {
   backdrop: true,
   shadow: true,
@@ -143,7 +151,7 @@ if (typeof window !== "undefined") {
       const s = window.getComputedStyle(html);
       if (s.transition !== "all 0s ease 0s" && s.transition !== "none") {
         // Trouver la classe ou le composant parent
-        const classes = html.className.slice(0, 80);
+        const classes = (getClassNames(html) || "").slice(0, 80);
         const tag = html.tagName.toLowerCase();
         const parentComp = findParentComponent(html);
         const props = s.transitionProperty;
@@ -177,7 +185,7 @@ if (typeof window !== "undefined") {
       const html = el as HTMLElement;
       const s = window.getComputedStyle(html);
       if (s.animation !== "none" && !s.animation.startsWith("none")) {
-        const classes = html.className.slice(0, 60);
+        const classes = (getClassNames(html) || "").slice(0, 60);
         const tag = html.tagName.toLowerCase();
         const animName = s.animationName;
         const animDur = s.animationDuration;
@@ -210,7 +218,7 @@ if (typeof window !== "undefined") {
       // Detecter les promotes indirects (ancetres)
       if (reasons.length > 0) {
         layerCount++;
-        const classes = html.className.slice(0, 60);
+        const classes = (getClassNames(html) || "").slice(0, 60);
         const tag = html.tagName.toLowerCase();
         console.log(`  #${layerCount} <${tag}${classes ? ` .${classes.split(" ").slice(0, 3).join(".")}` : ""}>`);
         reasons.forEach((r) => console.log(`    - ${r}`));
@@ -241,7 +249,7 @@ if (typeof window !== "undefined") {
     let current: HTMLElement | null = el;
     for (let i = 0; i < 3; i++) {
       if (!current) break;
-      const classes = current.className;
+      const classes = getClassNames(current) || "";
       if (classes.includes("contact-form") || classes.includes("contact-field") || classes.includes("contact-select") || classes.includes("contact-modal") || classes.includes("contact-categories")) {
         const match = classes.match(/contact-\w+/);
         if (match) return match[0];
