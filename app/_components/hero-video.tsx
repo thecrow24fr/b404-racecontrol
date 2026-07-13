@@ -5,15 +5,13 @@ import { useEffect, useRef, useState } from "react";
 /**
  * Vidéo de fond fixe pour le Hero.
  *
- * La vidéo est en `fixed inset-0` (sans z-index) : elle s'affiche au-dessus
- * du fond du body. Le conteneur principal `<div class="min-h-screen ...">`
- * est en `relative z-10` pour empiler tout le contenu du site au-dessus.
+ * La vidéo est positionnée en `fixed` derrière tout le contenu du site
+ * (z-index: -1). Chaque section du site la recouvre avec son propre fond
+ * opaque (bg-[#06101d] ou équivalent), ce qui supprime toute bande
+ * résiduelle à la transition entre sections.
  *
- * Chaque section du site couvre la vidéo avec son propre fond opaque
- * (bg-[#06101d]), éliminant toute bande résiduelle.
- *
- * Formats supportés :
- * - MP4 (H.264) : universel ✅
+ * Formats supportés par le navigateur :
+ * - MP4 (H.264) : support universel ✅
  * - WebM (VP9)   : Chrome, Firefox, Edge ✅
  */
 export function HeroVideo() {
@@ -22,6 +20,7 @@ export function HeroVideo() {
   const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
 
   useEffect(() => {
+    // Détection prefers-reduced-motion
     const mediaQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
     setPrefersReducedMotion(mediaQuery.matches);
 
@@ -44,11 +43,13 @@ export function HeroVideo() {
       setIsLoaded(true);
     };
 
+    // Vérification synchrone : si la vidéo est déjà jouable au montage
     if (video.readyState >= 3) {
       setIsLoaded(true);
       return;
     }
 
+    // Sinon, on attend les événements de disponibilité
     video.addEventListener("canplay", handleReady, { once: true });
     video.addEventListener("loadeddata", handleReady, { once: true });
 
@@ -58,14 +59,17 @@ export function HeroVideo() {
     };
   }, [prefersReducedMotion]);
 
+  // Si l'utilisateur préfère réduire les mouvements, on n'affiche pas la vidéo
   if (prefersReducedMotion) {
     return null;
   }
 
   return (
     <>
-      {/* Fallback : même fixed sans z-index, remplacé par la vidéo au chargement */}
-      {!isLoaded && <div className="fixed inset-0 bg-[#06101d]" />}
+      {/* Fallback overlay tant que la vidéo n'est pas chargée */}
+      {!isLoaded && (
+        <div className="fixed inset-0 z-[-1] bg-[#06101d]" />
+      )}
 
       <video
         ref={videoRef}
@@ -74,7 +78,7 @@ export function HeroVideo() {
         loop
         playsInline
         preload="auto"
-        className={`fixed inset-0 h-full w-full object-cover transition-opacity duration-700 ${
+        className={`fixed inset-0 z-[-1] h-full w-full object-cover transition-opacity duration-700 ${
           isLoaded ? "opacity-80" : "opacity-0"
         }`}
       >

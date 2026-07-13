@@ -7,7 +7,7 @@ import { ScrollTopButton } from "./_components/scroll-top-button";
 
 export default function Home() {
   return (
-    <div className="relative z-10 min-h-screen bg-[#06101d] text-white">
+    <div className="min-h-screen bg-[#06101d] text-white">
       <SiteHeader />
 
       <main id="top">
