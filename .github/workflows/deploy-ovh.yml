@@ -92,13 +92,13 @@ jobs:
       # - OVH_PORT: OVH SFTP port, usually 22
       # - OVH_USERNAME: OVH FTP/SFTP username
       # - OVH_PASSWORD: OVH FTP/SFTP password
-      # - OVH_TARGET_DIR: remote target directory, usually /www
+            # - OVH_TARGET_DIR: remote target directory, usually /www
       - name: Install lftp
         run: |
           sudo apt-get update
           sudo apt-get install -y lftp
 
-            - name: Deploy to OVH
+      - name: Deploy to OVH
         run: |
           lftp -u "${{ secrets.OVH_USERNAME }},${{ secrets.OVH_PASSWORD }}" sftp://${{ secrets.OVH_HOST }}:${{ secrets.OVH_PORT }} <<EOF
           set sftp:auto-confirm yes
