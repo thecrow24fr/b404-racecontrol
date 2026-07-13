@@ -3,16 +3,15 @@
 import { useEffect, useRef, useState } from "react";
 
 /**
- * Vidéo de fond fixe pour le Hero.
- *
- * La vidéo est positionnée en `fixed` derrière tout le contenu du site
- * (z-index: -1). Chaque section du site la recouvre avec son propre fond
- * opaque (bg-[#06101d] ou équivalent), ce qui supprime toute bande
- * résiduelle à la transition entre sections.
+ * Composant vidéo de fond pour le Hero.
  *
  * Formats supportés par le navigateur :
  * - MP4 (H.264) : support universel ✅
  * - WebM (VP9)   : Chrome, Firefox, Edge ✅
+ * - MOV          : Safari uniquement ❌
+ *
+ * TODO: Remplacer la vidéo de test .mov par un fichier .mp4 ou .webm
+ * Vidéo attendue : /videos/hero.mp4 (H.264, ~10-15 Mo max)
  */
 export function HeroVideo() {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -44,6 +43,7 @@ export function HeroVideo() {
     };
 
     // Vérification synchrone : si la vidéo est déjà jouable au montage
+    // (readyState: 0=rien, 1=metadata, 2=current, 3=future, 4=enough)
     if (video.readyState >= 3) {
       setIsLoaded(true);
       return;
@@ -68,9 +68,17 @@ export function HeroVideo() {
     <>
       {/* Fallback overlay tant que la vidéo n'est pas chargée */}
       {!isLoaded && (
-        <div className="fixed inset-0 z-[-1] bg-[#06101d]" />
+        <div className="absolute inset-0 bg-gradient-to-b from-[#06101d] via-[#0a1828] to-[#06101d]" />
       )}
 
+      {/*
+       * Vidéo de fond
+       *
+       * Ordre des sources (le navigateur prend la première lisible) :
+       *   1. hero.mp4  (H.264 — universel)   ✅ à privilégier
+       *   2. hero.webm (VP9 — Chrome/FF/Edge) ✅ alternative
+       *   3. test .mov (QuickTime — Safari)   ❌ temporaire
+       */}
       <video
         ref={videoRef}
         autoPlay
@@ -78,13 +86,31 @@ export function HeroVideo() {
         loop
         playsInline
         preload="auto"
-        className={`fixed inset-0 z-[-1] h-full w-full object-cover transition-opacity duration-700 ${
-          isLoaded ? "opacity-80" : "opacity-0"
-        }`}
+        className={`absolute inset-0 h-full w-full object-cover opacity-0 transition-opacity duration-700 ${
+          isLoaded ? "opacity-80" : ""
+        } ${isLoaded ? "animate-ken-burns" : ""}`}
       >
+        {/* Format universel (H.264) — à privilégier */}
         <source src="/videos/hero.mp4" type="video/mp4" />
+
+        {/* Format alternatif (VP9) — Chrome, Firefox, Edge */}
         <source src="/videos/hero.webm" type="video/webm" />
+
+        {/*
+         * Vidéo de test temporaire — Le format .mov n'est pas supporté
+         * par la balise <video> HTML5 sur Chrome/Firefox/Edge.
+         * Seul Safari peut potentiellement le lire.
+         * À remplacer par hero.mp4 dès que disponible.
+         */}
+        <source src="/depart%20spa.mov" type="video/quicktime" />
       </video>
+
+      {/* Overlay sombre pour la lisibilité */}
+      <div
+        className={`absolute inset-0 bg-gradient-to-b from-[#06101d]/60 via-transparent to-[#06101d]/70 transition-opacity duration-700 ${
+          isLoaded ? "opacity-100" : "opacity-0"
+        }`}
+      />
     </>
   );
 }

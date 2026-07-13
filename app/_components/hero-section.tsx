@@ -5,14 +5,14 @@ import { HeroVideo } from "./hero-video";
 
 export function HeroSection() {
   return (
-            <section className="relative h-dvh overflow-hidden border-b border-white/10 bg-[#06101d]">
-      {/* Vidéo de fond fixe (derrière tout le site via z-[-1] dans HeroVideo) */}
+    <section className="relative h-dvh overflow-hidden border-b border-white/10">
+      {/* Vidéo de fond (première couche) */}
       <HeroVideo />
 
-      {/* Overlay dégradé — la vidéo fixe est visible en transparence */}
+      {/* Dégradé de fond (deuxième couche) — la vidéo est visible en transparence */}
       <div className="absolute inset-0 bg-[radial-gradient(circle_at_15%_0%,rgba(255,122,0,0.22),transparent_34%),linear-gradient(180deg,rgba(6,16,29,0.60)_0%,rgba(8,20,36,0.75)_100%)]" />
 
-      {/* Éléments décoratifs animés */}
+      {/* Éléments décoratifs animés (troisième couche) */}
       <div className="pointer-events-none absolute inset-0 overflow-hidden">
         <div className="animate-breathe absolute -left-32 -top-32 h-64 w-64 rounded-full bg-orange-500/20 blur-3xl" />
         <div className="animate-breathe absolute -bottom-32 -right-32 h-64 w-64 rounded-full bg-orange-500/15 blur-3xl" style={{ animationDelay: "2s" }} />
