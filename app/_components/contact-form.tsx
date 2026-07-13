@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef } from "react";
 import type {
   ContactCategoryConfig,
   ContactFormData,
@@ -34,13 +34,19 @@ export function ContactForm({
   const [errors, setErrors] = useState<Record<string, string | null>>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  // Ref pour stabiliser handleChange : evite de recréer la fonction
+  // a chaque saisie (qui forcerait le re-rendu de tous les ContactField).
+  const formDataRef = useRef(formData);
+  formDataRef.current = formData;
+
   const handleChange = useCallback(
     (name: string, value: string) => {
-      setFormData((prev) => {
-        const next = { ...prev, [name]: value };
-        onDataChange(category.id, next);
-        return next;
-      });
+      const current = formDataRef.current;
+      const next = { ...current, [name]: value };
+      formDataRef.current = next;
+      setFormData(next);
+      onDataChange(category.id, next);
+
       // Efface l'erreur du champ quand l'utilisateur commence à taper
       if (errors[name]) {
         setErrors((prev) => {
@@ -50,6 +56,7 @@ export function ContactForm({
         });
       }
     },
+    // Ne depend plus de formData (via la ref), seulement de errors/category.id
     [errors, category.id, onDataChange]
   );
 
@@ -101,8 +108,28 @@ export function ContactForm({
 
       setIsSubmitting(true);
 
-      // TODO: Connecter à l'API d'envoi d'email
-      // await sendContactEmail(formData);
+      // SPRINT SMTP : decommenter le bloc ci-dessous et supprimer le setTimeout
+      //
+      // import { getRecipientConfig, buildEmailBody } from "./contact-config";
+      // import { sendEmail } from "../_services/email";
+      //
+      // const recipient = getRecipientConfig(category.id);
+      // if (!recipient) {
+      //   console.error("Aucun destinataire pour la categorie", category.id);
+      //   setIsSubmitting(false);
+      //   return;
+      // }
+      //
+      // const replyTo = formData["email"]?.trim() || "";
+      // const body = buildEmailBody(category, formData);
+      //
+      // await sendEmail({
+      //   from: recipient.from,
+      //   to: recipient.to,
+      //   subject: recipient.subject,
+      //   html: body,
+      //   replyTo: replyTo || undefined,
+      // });
       await new Promise((resolve) => setTimeout(resolve, 1200));
 
       setIsSubmitting(false);

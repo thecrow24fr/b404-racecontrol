@@ -1,6 +1,7 @@
 "use client";
 
 import type { FormFieldConfig } from "../_types/contact";
+import { ContactSelect } from "./contact-select";
 
 interface ContactFieldProps {
   field: FormFieldConfig;
@@ -20,7 +21,7 @@ export function ContactField({
   onChange,
 }: ContactFieldProps) {
   const baseInputStyle =
-    "w-full rounded-xl border bg-white/5 px-4 py-3 text-sm text-white placeholder-gray-500 outline-none transition focus:border-orange-400/60 focus:bg-white/10 focus:ring-1 focus:ring-orange-400/30";
+    "w-full rounded-xl border bg-white/5 px-4 py-3 text-sm text-white placeholder-gray-500 outline-none focus:border-orange-400/60 focus:bg-white/10 focus:ring-1 focus:ring-orange-400/30";
 
   const errorInputStyle = error
     ? "border-red-400/50 focus:border-red-400/60 focus:ring-red-400/30"
@@ -108,26 +109,17 @@ export function ContactField({
           aria-invalid={error ? "true" : "false"}
           aria-describedby={error ? `error-${field.name}` : undefined}
         />
-      ) : field.type === "select" ? (
-        <select
+      ) : field.type === "select" && field.options ? (
+        <ContactSelect
           id={`field-${field.name}`}
           name={field.name}
           value={value}
-          onChange={(e) => onChange(field.name, e.target.value)}
+          placeholder={field.placeholder}
+          options={field.options}
           required={field.required}
-          className={`${baseInputStyle} ${errorInputStyle} appearance-none bg-[url('data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2216%22%20height%3D%2216%22%20fill%3D%22%239ca3af%22%3E%3Cpath%20d%3D%22M4%206l4%204%204-4%22%20stroke%3D%22%239ca3af%22%20stroke-width%3D%221.5%22%20fill%3D%22none%22%2F%3E%3C%2Fsvg%3E')] bg-[length:16px] bg-[right_12px_center] bg-no-repeat pr-10`}
-          aria-invalid={error ? "true" : "false"}
-          aria-describedby={error ? `error-${field.name}` : undefined}
-        >
-          <option value="" disabled>
-            {field.placeholder}
-          </option>
-          {field.options?.map((opt) => (
-            <option key={opt} value={opt} className="bg-[#0d1b2e]">
-              {opt}
-            </option>
-          ))}
-        </select>
+          error={error}
+          onChange={onChange}
+        />
       ) : (
         <input
           id={`field-${field.name}`}

@@ -9,8 +9,7 @@ interface ContactCategoriesProps {
 
 /**
  * Grille des 6 grandes cartes de sélection de catégorie.
- * Animation optimisée : chaque carte apparaît avec un léger décalage (35ms)
- * sans bloquer l'affichage initial.
+ * Animation légère avec décalage progressif.
  */
 export function ContactCategories({
   categories,
@@ -25,9 +24,9 @@ export function ContactCategories({
           onClick={() => onSelect(category)}
           className="group flex flex-col items-start gap-3 rounded-2xl border border-white/10 bg-[#0d1b2e]/80 p-5 text-left shadow-lg shadow-black/20 outline-none transition-all duration-200 hover:-translate-y-0.5 hover:border-orange-400/45 hover:shadow-orange-500/10 focus-visible:ring-2 focus-visible:ring-orange-400/50"
           style={{
-            animation: `fade-up 0.35s ease-out forwards`,
-            animationDelay: `${30 + index * 35}ms`,
             opacity: 0,
+            animation: `card-fade-in 0.3s ease-out forwards`,
+            animationDelay: `${index * 40}ms`,
           }}
         >
           <span className="text-2xl" role="img" aria-hidden="true">
@@ -43,6 +42,18 @@ export function ContactCategories({
           </div>
         </button>
       ))}
+      <style>{`
+        @keyframes card-fade-in {
+          from {
+            opacity: 0;
+            transform: translateY(8px);
+          }
+          to {
+            opacity: 1;
+            transform: translateY(0);
+          }
+        }
+      `}</style>
     </div>
   );
 }

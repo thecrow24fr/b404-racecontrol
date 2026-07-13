@@ -35,3 +35,18 @@ export interface ContactFormData {
 
 export type ModalStep = "categories" | "form" | "success";
 
+/**
+ * Configuration d'acheminement d'un formulaire.
+ * Associe un type de demande a son destinataire email et son sujet par defaut.
+ */
+export interface ContactRecipientConfig {
+  /** Adresse email de l'expediteur (envoyee par le serveur SMTP) */
+  from: string;
+  /** Adresse email du destinataire */
+  to: string;
+  /** Sujet par defaut du message */
+  subject: string;
+  /** Nom lisible de la categorie */
+  label: string;
+}
+

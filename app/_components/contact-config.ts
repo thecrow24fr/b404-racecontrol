@@ -1,4 +1,8 @@
-import type { ContactCategoryConfig } from "../_types/contact";
+import type {
+  ContactCategoryConfig,
+  ContactFormData,
+  ContactRecipientConfig,
+} from "../_types/contact";
 
 /**
  * Configuration centralisée des catégories de contact.
@@ -380,4 +384,118 @@ export function getCategoryConfig(
   id: string
 ): ContactCategoryConfig | undefined {
   return contactCategories.find((c) => c.id === id);
+}
+
+// ----------------------------------------------------------------
+// Configuration des destinataires email
+// ----------------------------------------------------------------
+// Centralise les adresses de réception par type de formulaire.
+// Chaque clé correspond à un ContactCategoryId.
+// Facilement extensible : ajouter une entrée pour chaque nouvelle
+// catégorie.
+// Utilisé par le service d'envoi email (Sprint SMTP).
+
+export const contactRecipients: Record<
+  string,
+  ContactRecipientConfig
+> = {
+  "contact-general": {
+    from: "B404 RaceControl <noreply@b404ldc.fr>",
+    to: "contact@b404ldc.fr",
+    subject: "Nouveau message - Contact general",
+    label: "Contact general",
+  },
+  recrutement: {
+    from: "B404 RaceControl <noreply@b404ldc.fr>",
+    to: "recrutement@b404ldc.fr",
+    subject: "Nouvelle candidature - Recrutement",
+    label: "Recrutement",
+  },
+  partenariat: {
+    from: "B404 RaceControl <noreply@b404ldc.fr>",
+    to: "partenariat@b404ldc.fr",
+    subject: "Nouvelle proposition - Partenariat",
+    label: "Partenariat",
+  },
+  support: {
+    from: "B404 RaceControl <noreply@b404ldc.fr>",
+    to: "support@b404ldc.fr",
+    subject: "Nouvel incident - Support RaceControl",
+    label: "Support RaceControl",
+  },
+  suggestion: {
+    from: "B404 RaceControl <noreply@b404ldc.fr>",
+    to: "contact@b404ldc.fr",
+    subject: "Nouvelle suggestion",
+    label: "Suggestion",
+  },
+  autre: {
+    from: "B404 RaceControl <noreply@b404ldc.fr>",
+    to: "contact@b404ldc.fr",
+    subject: "Nouvelle demande - Autre",
+    label: "Autre",
+  },
+};
+
+/** Trouve la config destinataire d'une catégorie par son id */
+export function getRecipientConfig(
+  id: string
+): ContactRecipientConfig | undefined {
+  return contactRecipients[id];
+}
+
+// ----------------------------------------------------------------
+// Construction du corps de l'email
+// ----------------------------------------------------------------
+// Transforme les donnees d'un formulaire en corps d'email formaté.
+// Utilise la configuration des champs pour afficher les labels
+// (et non les noms techniques).
+
+/**
+ * Construit le corps HTML d'un email a partir des donnees soumises.
+ *
+ * @param category - Configuration de la categorie (champs, label...)
+ * @param formData - Donnees saisies par l'utilisateur
+ * @returns Chaîne HTML prete a etre envoyee
+ */
+export function buildEmailBody(
+  category: ContactCategoryConfig,
+  formData: Record<string, string>
+): string {
+  const rows = category.fields
+    .filter((f) => f.name !== "rgpd") // Ne pas inclure le consentement RGPD dans le corps
+    .map((f) => {
+      const value = formData[f.name]?.trim() || "(non renseigné)";
+      return `
+        <tr>
+          <td style="padding:8px 16px;font-weight:600;color:#f97316;white-space:nowrap;vertical-align:top;border-bottom:1px solid #1e293b;">
+            ${f.label}
+            ${f.type === "checkbox" && value === "true" ? '<span style="color:#22c55e">✓</span>' : ""}
+          </td>
+          <td style="padding:8px 16px;color:#e2e8f0;border-bottom:1px solid #1e293b;">
+            ${value}
+          </td>
+        </tr>`;
+    })
+    .join("");
+
+  return `
+    <div style="max-width:600px;margin:0 auto;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0f172a;border-radius:16px;overflow:hidden;border:1px solid #1e293b;">
+      <div style="padding:24px 32px;background:linear-gradient(135deg,#0f172a,#1e293b);border-bottom:2px solid #f97316;">
+        <h1 style="margin:0;font-size:18px;font-weight:800;color:#f97316;letter-spacing:0.05em;">
+          B404 RACECONTROL
+        </h1>
+        <p style="margin:4px 0 0;font-size:13px;color:#94a3b8;">
+          ${category.label} — ${new Date().toLocaleString("fr-FR")}
+        </p>
+      </div>
+      <table style="width:100%;border-collapse:collapse;">
+        ${rows}
+      </table>
+      <div style="padding:16px 32px;border-top:1px solid #1e293b;text-align:center;">
+        <p style="margin:0;font-size:11px;color:#475569;">
+          Cet email a ete envoye depuis le formulaire de contact B404 RaceControl.
+        </p>
+      </div>
+    </div>`;
 }

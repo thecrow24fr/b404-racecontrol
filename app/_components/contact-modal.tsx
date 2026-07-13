@@ -17,48 +17,54 @@ interface ContactModalProps {
 
 /**
  * Modal de contact premium.
- * Gere l'ouverture/fermeture, le focus trap, les animations optimisees,
- * la navigation entre les etapes (categories, formulaire, succes).
  *
- * Les donnees des formulaires sont conservees entre les retours aux
- * categories : l'utilisateur ne perd jamais sa saisie.
- * Le bouton "Nouvelle demande" depuis l'ecran succes reinitialise
- * le formulaire de la categorie courante.
+ * Architecture scroll :
+ *   - L'overlay fixe (+ backdrop-blur) ne scroll PAS.
+ *   - La fenetre modale est positionnee avec un top fixe et margin auto,
+ *     sans overflow sur le conteneur externe.
+ *   - Seul le contenu interieur (liste des champs) est scrollable,
+ *     dans un conteneur dedie avec overflow-y-auto.
+ *   - Le titre, le bouton fermer et les controles de navigation restent fixes.
+ *
+ * Cela evite la double scrollbar qui degradait la fluidite du defilement.
  */
 export function ContactModal({ isOpen, onClose }: ContactModalProps) {
   const modalRef = useRef<HTMLDivElement>(null);
   const previousActiveElement = useRef<HTMLElement | null>(null);
+  const mountedRef = useRef(false);
   const [step, setStep] = useState<ModalStep>("categories");
   const [selectedCategory, setSelectedCategory] =
     useState<ContactCategoryConfig | null>(null);
   const [isAnimating, setIsAnimating] = useState(false);
 
-  // Stockage persistant des formulaires en cours de saisie
+  // Donnees persistantes partagees entre categories
+  // Cle "user" = identite commune (nom, prenom, email, age, discord)
+  // Cle "<categoryId>" = donnees specifiques par formulaire
   const [formsData, setFormsData] = useState<
     Record<string, ContactFormData>
   >({});
 
   useEffect(() => {
-    if (isOpen) {
-      setStep("categories");
-      setSelectedCategory(null);
-      setFormsData({});
-    }
+    if (!isOpen) return;
+    setStep("categories");
+    setSelectedCategory(null);
+    setFormsData({});
   }, [isOpen]);
 
   const handleClose = useCallback(() => {
     setIsAnimating(true);
     setTimeout(() => {
-      setIsAnimating(false);
+      if (mountedRef.current) {
+        setIsAnimating(false);
+      }
       onClose();
     }, 180);
   }, [onClose]);
 
   useEffect(() => {
-    if (!isOpen) {
-      return;
-    }
+    if (!isOpen) return;
 
+    mountedRef.current = true;
     previousActiveElement.current = document.activeElement as HTMLElement;
 
     setTimeout(() => {
@@ -76,20 +82,14 @@ export function ContactModal({ isOpen, onClose }: ContactModalProps) {
           modalRef.current.querySelectorAll<HTMLElement>(
             'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
           );
-
         if (focusableElements.length === 0) {
           e.preventDefault();
           return;
         }
-
         const firstElement = focusableElements[0];
         const lastElement =
           focusableElements[focusableElements.length - 1];
-
-        if (
-          e.shiftKey &&
-          document.activeElement === firstElement
-        ) {
+        if (e.shiftKey && document.activeElement === firstElement) {
           e.preventDefault();
           lastElement.focus();
         } else if (
@@ -113,6 +113,7 @@ export function ContactModal({ isOpen, onClose }: ContactModalProps) {
       document.removeEventListener("keydown", handleKeyDown);
       document.body.style.overflow = "";
       document.body.style.paddingRight = "";
+      mountedRef.current = false;
       previousActiveElement.current?.focus();
     };
   }, [isOpen, handleClose]);
@@ -125,23 +126,82 @@ export function ContactModal({ isOpen, onClose }: ContactModalProps) {
     []
   );
 
-  // Retour aux categories - conserve les formulaires
+  // Retour : conserve l'identite (user) et les donnees specifiques, sauf RGPD
   const handleBack = useCallback(() => {
+    setFormsData((prev) => {
+      const next = { ...prev };
+      for (const [id, data] of Object.entries(next)) {
+        if (data["rgpd"] === "true") {
+          const cleaned = { ...data };
+          delete cleaned["rgpd"];
+          next[id] = cleaned;
+        }
+      }
+      return next;
+    });
     setStep("categories");
   }, []);
 
-  // Retour aux categories depuis l'ecran succes
-  // Reinitialise les donnees de la categorie courante
+  // Retour depuis success : conserve l'identite + age + discord dans "user"
   const handleBackFromSuccess = useCallback(() => {
     if (selectedCategory) {
       setFormsData((prev) => {
+        const existing = prev[selectedCategory.id];
+        if (!existing) return prev;
+
+        // Extraire l'identite commune depuis la categorie courante
+        const userIdentity: Record<string, string> = {};
+        userIdentity.category = selectedCategory.id;
+        for (const k of ["nom", "prenom", "email", "age", "discord"]) {
+          if (existing[k]?.trim()) {
+            userIdentity[k] = existing[k];
+          }
+        }
+
+        // Reinitialiser les donnees specifiques de la categorie courante
+        // mais y injecter l'identite commune
         const next = { ...prev };
-        delete next[selectedCategory.id];
+        // Mettre a jour l'identite commune stockee dans "user"
+        const currentUser = next["user"]
+          ? { ...next["user"] }
+          : ({} as Record<string, string>);
+        for (const k of ["nom", "prenom", "email", "age", "discord"]) {
+          if (userIdentity[k]) {
+            currentUser[k] = userIdentity[k];
+          }
+        }
+        next["user"] = currentUser as ContactFormData;
+
+        // Reinitialiser la categorie courante avec l'identite commune
+        const kept: Record<string, string> = {};
+        kept.category = selectedCategory.id;
+        for (const k of ["nom", "prenom", "email", "age", "discord"]) {
+          if (currentUser[k]) {
+            kept[k] = currentUser[k];
+          }
+        }
+        next[selectedCategory.id] = kept as ContactFormData;
+
         return next;
       });
     }
     setStep("categories");
   }, [selectedCategory]);
+
+  // Initialiser les donnees d'une categorie :
+  // fusionner l'identite commune "user" + les donnees specifiques existantes
+  const getInitialData = useCallback(
+    (categoryId: string): ContactFormData | undefined => {
+      const existing = formsData[categoryId];
+      const userData = formsData["user"];
+      if (!existing && !userData) return undefined;
+      if (!existing) return formsData["user"];
+      if (!userData) return existing;
+      // Fusion : les donnees specifiques ecrasent l'identite
+      return { ...userData, ...existing };
+    },
+    [formsData]
+  );
 
   const handleStepChange = useCallback((newStep: ModalStep) => {
     setStep(newStep);
@@ -154,13 +214,11 @@ export function ContactModal({ isOpen, onClose }: ContactModalProps) {
     []
   );
 
-  if (!isOpen && !isAnimating) {
-    return null;
-  }
+  if (!isOpen && !isAnimating) return null;
 
   return (
     <>
-      {/* Overlay */}
+      {/* Overlay fixe — le backdrop-blur est ici, sur un element qui ne scroll PAS */}
       <div
         className={`fixed inset-0 z-[100] bg-black/60 backdrop-blur-[2px] transition-opacity duration-[80ms] ${
           isOpen && !isAnimating ? "opacity-100" : "opacity-0"
@@ -169,29 +227,30 @@ export function ContactModal({ isOpen, onClose }: ContactModalProps) {
         aria-hidden="true"
       />
 
-      {/* Container centre */}
+      {/* Conteneur fixe — sans aucun overflow, seule la zone scrollable interieure scroll */}
       <div
-        className="fixed inset-0 z-[101] flex items-center justify-center p-4 sm:p-6"
+        className="fixed inset-0 z-[101]"
         onClick={(e) => {
           if (e.target === e.currentTarget) {
             handleClose();
           }
         }}
       >
+        {/* Fenetre positionnee avec marge haute, pas de contrainte de hauteur */}
         <div
           ref={modalRef}
           role="dialog"
           aria-modal="true"
           aria-label="Formulaire de contact"
           tabIndex={-1}
-          className="relative w-full max-w-lg outline-none"
+          className="mx-auto mt-[5vh] flex w-full max-w-lg outline-none sm:mt-[8vh]"
           style={{
             animation: `${
               isOpen && !isAnimating ? "modal-enter" : "modal-exit"
             } 0.18s cubic-bezier(0.16, 1, 0.3, 1) forwards`,
           }}
         >
-          <div className="rounded-3xl border border-white/10 bg-[#071426] shadow-2xl shadow-black/40 backdrop-blur-xl">
+          <div className="flex w-full flex-col rounded-3xl border border-white/10 bg-[#071426] shadow-2xl shadow-black/40">
             {/* Bouton fermeture */}
             <button
               type="button"
@@ -214,8 +273,9 @@ export function ContactModal({ isOpen, onClose }: ContactModalProps) {
               </svg>
             </button>
 
-            <div className="px-6 pb-8 pt-10 sm:px-8">
-              <div className="mb-7 text-center">
+            {/* Titre fixe (hors zone scrollable) */}
+            <div className="shrink-0 px-6 pb-3 pt-10 sm:px-8">
+              <div className="text-center">
                 <h2 className="text-2xl font-black text-white">
                   Comment pouvons-nous vous aider&nbsp;?
                 </h2>
@@ -225,7 +285,10 @@ export function ContactModal({ isOpen, onClose }: ContactModalProps) {
                     : ""}
                 </p>
               </div>
+            </div>
 
+            {/* Zone scrollable UNIQUE */}
+            <div className="overflow-y-auto px-6 pb-8 sm:px-8" style={{ maxHeight: "calc(85vh - 140px)" }}>
               {step === "categories" && (
                 <ContactCategories
                   categories={contactCategories}
@@ -237,7 +300,7 @@ export function ContactModal({ isOpen, onClose }: ContactModalProps) {
                 <ContactForm
                   key={selectedCategory.id}
                   category={selectedCategory}
-                  initialData={formsData[selectedCategory.id]}
+                  initialData={getInitialData(selectedCategory.id)}
                   onDataChange={handleFormDataChange}
                   onBack={handleBack}
                   onStepChange={handleStepChange}
