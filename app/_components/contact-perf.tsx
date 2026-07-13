@@ -34,6 +34,7 @@ const state = {
   animation: true,
   blurModal: true,
   border: true,
+  transition: true,
 };
 
 function apply() {
@@ -92,6 +93,21 @@ function apply() {
       html.style.setProperty("border", "none", "important");
     }
   });
+
+  // Transitions
+  if (!state.transition) {
+    document.querySelectorAll("*").forEach((el) => {
+      const html = el as HTMLElement;
+      html.style.setProperty("transition", "none", "important");
+    });
+  } else {
+    document.querySelectorAll("[style*='transition']").forEach((el) => {
+      const html = el as HTMLElement;
+      if (html.style.transition === "none") {
+        html.style.transition = "";
+      }
+    });
+  }
 }
 
 // Exposer les commandes
@@ -107,10 +123,7 @@ if (typeof window !== "undefined") {
     }
     apply();
     (window as any).__perfNeedsReset = true;
-    console.log(
-      `%c[PERF] ${what}: ${(state as any)[what] ? "ON" : "OFF"}`,
-      `color:${(state as any)[what] ? "green" : "red"};font-weight:bold`
-    );
+        console.log(`%c[PERF] ${what}: ${(state as any)[what] ? "ON" : "OFF"}`, `color:${(state as any)[what] ? "green" : "red"};font-weight:bold`);
   };
 
   (window as any).reset = () => {
@@ -125,6 +138,7 @@ if (typeof window !== "undefined") {
       html.style.borderWidth = "";
       html.style.borderStyle = "";
       html.style.borderColor = "";
+      html.style.transition = "";
     });
     (window as any).__perfNeedsReset = true;
     console.log("%c[PERF] Tout restaure", "color:green;font-weight:bold");
