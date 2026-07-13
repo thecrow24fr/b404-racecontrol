@@ -9,7 +9,6 @@ import type {
 import { contactCategories } from "./contact-config";
 import { ContactCategories } from "./contact-categories";
 import { ContactForm } from "./contact-form";
-import { ContactPerf } from "./contact-perf";
 
 interface ContactModalProps {
   isOpen: boolean;
@@ -219,8 +218,6 @@ export function ContactModal({ isOpen, onClose }: ContactModalProps) {
 
   return (
     <>
-      {isOpen && <ContactPerf />}
-
       {/* Overlay fixe — le backdrop-blur est ici, sur un element qui ne scroll PAS */}
       <div
         className={`fixed inset-0 z-[100] bg-black/60 backdrop-blur-[2px] transition-opacity duration-[80ms] ${
