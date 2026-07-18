@@ -1,10 +1,5 @@
 import type { Metadata } from "next";
-import { LiveTimingHero } from "../_components/live-timing-hero";
-import { SessionBanner } from "../_components/live-timing-session-banner";
-import { ServerInfoPanel } from "../_components/live-timing-server-info";
-import { StandingsTable } from "../_components/live-timing-standings";
-import { SiteFooter } from "../_components/site-footer";
-import { ScrollTopButton } from "../_components/scroll-top-button";
+import { LiveTimingClient } from "../_components/live-timing-client";
 import { mockLiveTimingData } from "../_data/live-timing-data";
 
 export const metadata: Metadata = {
@@ -16,22 +11,19 @@ export const metadata: Metadata = {
 /**
  * Page Live Timing Premium — B404 RaceControl
  *
- * Affiche les données de course en direct (actuellement simulées).
- * Sprint 1 — Fondation modulaire. Aucune connexion R2LA.
+ * Affiche les données de course en direct.
  *
- * @see live-timing-data.ts pour remplacer les mock data par R2LA
+ * Architecture DataProvider :
+ * - Priorité 1 : API native rFactor 2 (localhost:5397) si le jeu est lancé
+ * - Fallback  : Données simulées (mock) pour le développement / static export
+ *
+ * La page reste un composant serveur pour le metadata SEO.
+ * Le composant LiveTimingClient gère toute la logique de
+ * détection de source et polling côté client.
+ *
+ * @see LiveTimingClient pour la logique de sélection de source
+ * @see data-provider.ts pour l'interface IDataProvider
  */
 export default function LiveTimingPage() {
-  const data = mockLiveTimingData;
-
-  return (
-    <div className="min-h-screen bg-[#06101d] text-white">
-      <LiveTimingHero />
-      <SessionBanner session={data.session} />
-      <ServerInfoPanel server={data.server} />
-      <StandingsTable standings={data.standings} />
-      <SiteFooter />
-      <ScrollTopButton />
-    </div>
-  );
+  return <LiveTimingClient initialData={mockLiveTimingData} />;
 }

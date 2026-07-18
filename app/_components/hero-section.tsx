@@ -27,28 +27,26 @@ export function HeroSection() {
           </p>
 
           {/* Titre */}
-          <h1 className="animate-fade-up animate-delay-100 text-5xl font-black leading-none sm:text-7xl lg:text-8xl">
+          <h1 className="animate-fade-up text-5xl font-black leading-none sm:text-7xl lg:text-8xl">
             B404
             <span className="mt-3 block text-orange-400">RaceControl</span>
           </h1>
 
           {/* Sous-titre */}
-          <p className="animate-fade-up animate-delay-200 mx-auto mt-7 max-w-2xl text-lg leading-8 text-gray-300">
+          <p className="animate-fade-up mx-auto mt-7 max-w-2xl text-lg leading-8 text-gray-300">
             Centre de contr&ocirc;le officiel des championnats B404.
             Suivez les sessions en direct, consultez les classements et
             acc&eacute;dez au Live Timing.
           </p>
 
           {/* Bouton principal Live Timing */}
-          <div className="animate-fade-up animate-delay-300 mx-auto mt-10 max-w-md">
+          <div className="animate-fade-up mx-auto mt-10 max-w-md">
             <a
-              href="https://live.b404ldc.fr"
-              target="_blank"
-              rel="noopener noreferrer"
+              href="#servers"
               className="group relative inline-flex w-full items-center justify-center gap-3 rounded-full bg-orange-500 px-8 py-4 text-base font-bold shadow-2xl shadow-orange-500/30 transition-all duration-300 hover:scale-[1.04] hover:bg-orange-400 hover:shadow-orange-400/50 active:scale-95 sm:px-10 sm:py-4 sm:text-lg"
             >
               <Timer className="h-5 w-5 transition group-hover:rotate-[8deg]" />
-              <span>Acc&eacute;der au Live Timing</span>
+              <span>Voir les serveurs</span>
               <span className="absolute inset-0 rounded-full bg-white/10 opacity-0 transition group-hover:opacity-100" />
             </a>
             <p className="mt-3 text-xs leading-5 text-gray-500">
@@ -58,7 +56,7 @@ export function HeroSection() {
           </div>
 
           {/* Boutons secondaires */}
-          <div className="animate-fade-up animate-delay-400 mt-8 flex flex-wrap justify-center gap-4">
+          <div className="animate-fade-up mt-8 flex flex-wrap justify-center gap-4">
             <a
               href="#servers"
               className="rounded-full border border-white/15 bg-white/5 px-5 py-2.5 text-sm font-bold transition hover:-translate-y-0.5 hover:border-orange-300 hover:bg-white/10 hover:text-orange-200"
@@ -74,7 +72,7 @@ export function HeroSection() {
           </div>
 
           {/* Stats */}
-          <div className="animate-fade-up animate-delay-500 mx-auto mt-16 grid max-w-lg grid-cols-3 overflow-hidden rounded-3xl border border-white/10 bg-[#071426]/70 backdrop-blur-xl">
+          <div className="animate-fade-up mx-auto mt-16 grid max-w-lg grid-cols-3 overflow-hidden rounded-3xl border border-white/10 bg-[#071426]/70 backdrop-blur-xl">
             <div className="border-r border-white/10 px-4 py-4">
               <p className="text-3xl font-black text-white">3</p>
               <p className="mt-1 text-xs font-black uppercase tracking-[0.18em] text-gray-400">

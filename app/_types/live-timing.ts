@@ -85,6 +85,8 @@ export interface StandingEntry {
   driverName: string;
   team: string;
   car: string;
+  /** Numéro de la voiture (disponible via API rF2) */
+  carNumber?: string;
   carClass: CarCategory;
   laps: number;
   /** Écart au leader ("Leader" pour le premier) */
@@ -100,6 +102,16 @@ export interface StandingEntry {
   status: DriverStatus;
   /** Nombre d'arrêts au stand */
   pitStops: number;
+  /** Meilleur tour absolu de la course */
+  isPole?: boolean;
+  /** Carburant restant (0.0 → 1.0) */
+  fuel?: number;
+  /** DRS actif */
+  drsActive?: boolean;
+  /** Nombre de pénalités */
+  penalties?: number;
+  /** Identifiant Steam */
+  steamID?: number;
 }
 
 /** Informations globales de la session */
