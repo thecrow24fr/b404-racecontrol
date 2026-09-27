@@ -2,6 +2,7 @@
 
 import { Timer } from "lucide-react";
 import { HeroVideo } from "./hero-video";
+import { siteLinks } from "../_config/site-links";
 
 export function HeroSection() {
   return (
@@ -34,19 +35,18 @@ export function HeroSection() {
 
           {/* Sous-titre */}
           <p className="animate-fade-up mx-auto mt-7 max-w-2xl text-lg leading-8 text-gray-300">
-            Centre de contr&ocirc;le officiel des championnats B404.
-            Suivez les sessions en direct, consultez les classements et
-            acc&eacute;dez au Live Timing.
+            Suivez les sessions B404 en direct avec les classements, les temps
+            au tour et les informations serveur actualisées en temps réel.
           </p>
 
           {/* Bouton principal Live Timing */}
           <div className="animate-fade-up mx-auto mt-10 max-w-md">
             <a
-              href="#servers"
+              href={siteLinks.liveTiming}
               className="group relative inline-flex w-full items-center justify-center gap-3 rounded-full bg-orange-500 px-8 py-4 text-base font-bold shadow-2xl shadow-orange-500/30 transition-all duration-300 hover:scale-[1.04] hover:bg-orange-400 hover:shadow-orange-400/50 active:scale-95 sm:px-10 sm:py-4 sm:text-lg"
             >
               <Timer className="h-5 w-5 transition group-hover:rotate-[8deg]" />
-              <span>Voir les serveurs</span>
+              <span>Voir le Live Timing</span>
               <span className="absolute inset-0 rounded-full bg-white/10 opacity-0 transition group-hover:opacity-100" />
             </a>
             <p className="mt-3 text-xs leading-5 text-gray-500">
@@ -55,43 +55,26 @@ export function HeroSection() {
             </p>
           </div>
 
-          {/* Boutons secondaires */}
+          {/* Accès aux modules indépendants */}
           <div className="animate-fade-up mt-8 flex flex-wrap justify-center gap-4">
             <a
-              href="#servers"
+              href={siteLinks.servers}
               className="rounded-full border border-white/15 bg-white/5 px-5 py-2.5 text-sm font-bold transition hover:-translate-y-0.5 hover:border-orange-300 hover:bg-white/10 hover:text-orange-200"
             >
               Voir les serveurs
             </a>
             <a
-              href="#about"
+              href={siteLinks.about}
               className="rounded-full border border-white/15 bg-white/5 px-5 py-2.5 text-sm font-bold transition hover:-translate-y-0.5 hover:border-orange-300 hover:bg-white/10 hover:text-orange-200"
             >
-              Calendrier
+              À propos
             </a>
           </div>
 
-          {/* Stats */}
-          <div className="animate-fade-up mx-auto mt-16 grid max-w-lg grid-cols-3 overflow-hidden rounded-3xl border border-white/10 bg-[#071426]/70 backdrop-blur-xl">
-            <div className="border-r border-white/10 px-4 py-4">
-              <p className="text-3xl font-black text-white">3</p>
-              <p className="mt-1 text-xs font-black uppercase tracking-[0.18em] text-gray-400">
-                Serveurs
-              </p>
-            </div>
-            <div className="border-r border-white/10 px-4 py-4">
-              <p className="text-3xl font-black text-white">30</p>
-              <p className="mt-1 text-xs font-black uppercase tracking-[0.18em] text-gray-400">
-                Pilotes
-              </p>
-            </div>
-            <div className="px-4 py-4">
-              <p className="text-3xl font-black text-white">Practice</p>
-              <p className="mt-1 text-xs font-black uppercase tracking-[0.18em] text-gray-400">
-                Session
-              </p>
-            </div>
-          </div>
+          <p className="animate-fade-up mx-auto mt-12 max-w-xl text-xs leading-5 text-gray-500">
+            Les compteurs et classements apparaissent uniquement lorsqu’une source
+            RaceControl les fournit réellement.
+          </p>
         </div>
       </div>
     </section>

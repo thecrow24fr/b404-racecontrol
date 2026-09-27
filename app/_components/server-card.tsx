@@ -74,16 +74,15 @@ interface ServerCardProps {
 export function ServerCard({ server }: ServerCardProps) {
   const s = server;
   const isOnline = s.status === "online";
+  const isLiveTimingTarget = s.id === "20" && isOnline;
+  const cardClassName = `group relative flex flex-col overflow-hidden rounded-3xl border transition duration-300 ${
+    isOnline
+      ? "border-white/10 bg-[#0d1b2e] hover:-translate-y-1.5 hover:border-orange-400/45 hover:shadow-orange-500/10"
+      : "border-white/5 bg-[#0a1420] opacity-60"
+  }`;
 
-  return (
-    <Link
-      href={`/serveurs/${s.id}/live-timing`}
-      className={`group relative flex flex-col overflow-hidden rounded-3xl border transition duration-300 ${
-        isOnline
-          ? "border-white/10 bg-[#0d1b2e] hover:-translate-y-1.5 hover:border-orange-400/45 hover:shadow-orange-500/10"
-          : "border-white/5 bg-[#0a1420] opacity-60 hover:opacity-80"
-      }`}
-    >
+  const cardContent = (
+    <>
       {/* Glow effect au hover */}
       {isOnline && (
         <div className="pointer-events-none absolute inset-0 opacity-0 transition duration-300 group-hover:opacity-100">
@@ -204,7 +203,7 @@ export function ServerCard({ server }: ServerCardProps) {
 
         {/* ── Bouton CTA ── */}
         <div className="mt-auto">
-          {isOnline ? (
+          {isLiveTimingTarget ? (
             <div className="flex w-full items-center justify-center gap-2 rounded-full bg-orange-500 px-4 py-2.5 text-sm font-bold text-white shadow-lg shadow-orange-500/20 transition group-hover:bg-orange-400">
               <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.347a1.125 1.125 0 0 1 0 1.972l-11.54 6.347a1.125 1.125 0 0 1-1.667-.986V5.653Z" />
@@ -218,6 +217,14 @@ export function ServerCard({ server }: ServerCardProps) {
           )}
         </div>
       </div>
+    </>
+  );
+
+  return isLiveTimingTarget ? (
+    <Link href="/live-timing" className={cardClassName}>
+      {cardContent}
     </Link>
+  ) : (
+    <div className={cardClassName}>{cardContent}</div>
   );
 }

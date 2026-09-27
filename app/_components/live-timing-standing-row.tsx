@@ -24,24 +24,8 @@ interface StandingRowProps {
  * - Plus tard avec des données réelles sans modification
  */
 export function StandingRow({ entry, isPole = false }: StandingRowProps) {
-  const isGain = entry.prevPosition > entry.position;
-  const isLoss = entry.prevPosition < entry.position;
-
-  const statusStyle: Record<string, string> = {
-    running: "text-emerald-400",
-    pit: "text-yellow-400",
-    out: "text-red-400",
-    finished: "text-blue-400",
-    dnf: "text-red-500",
-  };
-
-  const statusLabel: Record<string, string> = {
-    running: "",
-    pit: "PIT",
-    out: "OUT",
-    finished: "FIN",
-    dnf: "DNF",
-  };
+  const startingPosition = entry.startingPosition ?? entry.prevPosition;
+  const isGain = startingPosition > entry.position;
 
   return (
     <tr className={`group border-b border-white/[0.04] transition hover:bg-white/[0.03] ${isPole ? "bg-orange-500/[0.03]" : ""}`}>
@@ -64,17 +48,22 @@ export function StandingRow({ entry, isPole = false }: StandingRowProps) {
       </td>
 
       {/* Changement de position */}
-      <td className="px-0 py-2.5 align-middle">
-        <div className="flex items-center justify-center">
-          {entry.prevPosition > 0 && entry.prevPosition !== entry.position ? (
+      <td
+        className="px-0 py-2.5 align-middle"
+        title={`Position de départ ${startingPosition}, position actuelle ${entry.position}`}
+        aria-label={`Position de départ ${startingPosition}, position actuelle ${entry.position}`}
+      >
+        <div className="flex items-center justify-center gap-1">
+          {startingPosition > 0 && startingPosition !== entry.position ? (
             isGain ? (
-              <ChevronUp className="h-3.5 w-3.5 text-emerald-400" />
+              <ChevronUp className="h-3.5 w-3.5 text-emerald-400" aria-label="Gain" />
             ) : (
-              <ChevronDown className="h-3.5 w-3.5 text-red-400" />
+              <ChevronDown className="h-3.5 w-3.5 text-red-400" aria-label="Perte" />
             )
-          ) : entry.prevPosition > 0 ? (
-            <Minus className="h-3 w-3 text-gray-600" />
+          ) : startingPosition > 0 ? (
+            <Minus className="h-3 w-3 text-gray-600" aria-label="Position inchangée" />
           ) : null}
+          <span className="sr-only">Départ {startingPosition}</span>
         </div>
       </td>
 
@@ -138,6 +127,15 @@ export function StandingRow({ entry, isPole = false }: StandingRowProps) {
           <span className="text-white/30">|</span>
           <span>{entry.sector3}</span>
         </div>
+      </td>
+
+      {/* Carburant : valeur native, sans conversion d’unité */}
+      <td className="hidden px-3 py-2.5 align-middle text-right 2xl:table-cell">
+        <span className="font-mono text-xs tabular-nums text-gray-400">
+          {entry.fuelFraction === null || entry.fuelFraction === undefined
+            ? "—"
+            : entry.fuelFraction.toFixed(3)}
+        </span>
       </td>
 
       {/* Statut */}

@@ -535,13 +535,13 @@ export default function ApiDiagPage() {
                   </p>
                   <div className="rounded-xl border border-emerald-500/15 bg-emerald-500/5 p-3 font-mono text-[11px] text-emerald-300">
                     {`# Exemple de ligne de commande lue`}<br />
-                    {`"C:\\Serveur_RF2\\Bin64\\rFactor2 Dedicated.exe"`}<br />
+                    {`"Y:\\B404_DEDICATED\\SERVEURS\\rfactor2-dedicated\\Bin64\\rFactor2 Dedicated.exe"`}<br />
                     {`  +trace=3 +profile="Serveur 2" +maxplayers 30`}
                   </div>
                   <p>
                     Chaque profil correspond à un dossier dans{" "}
                     <code className="rounded bg-white/5 px-1.5 py-0.5 text-gray-400 font-mono text-[10px]">
-                      C:\Serveur_RF2\UserData\
+                      Y:\B404_DEDICATED\SERVEURS\rfactor2-dedicated\UserData\
                     </code>
                     . Le port WebUI est déduit : <strong className="text-white">WebUI Port = Port par défaut + (index_profil - 1) × 3</strong>
                     , soit une base à 5297 + incrément de 3.
@@ -647,7 +647,7 @@ export default function ApiDiagPage() {
               <p className="mt-1 text-sm text-gray-400">
                 Installation rFactor 2 détectée dans{" "}
                 <code className="rounded bg-white/5 px-1.5 py-0.5 text-orange-300 font-mono text-[11px]">
-                  C:\Serveur_RF2\
+                  Y:\B404_DEDICATED\SERVEURS\rfactor2-dedicated\
                 </code>
               </p>
               <div className="mt-4 overflow-x-auto">

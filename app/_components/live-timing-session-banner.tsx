@@ -1,7 +1,9 @@
 "use client";
 
-import { CheckCircle, Clock, Thermometer, Flag } from "lucide-react";
+import { Clock, Thermometer, Flag } from "lucide-react";
 import type { SessionInfo } from "../_types/live-timing";
+import { formatRFactorDuration } from "../_services/live-timing-formatters";
+import { formatSessionDisplayLabel } from "../_services/live-timing-session-labels";
 
 interface SessionBannerProps {
   session: SessionInfo;
@@ -33,9 +35,33 @@ export function SessionBanner({ session }: SessionBannerProps) {
     paused: "text-yellow-300",
   };
 
+  const sessionCodeLabels: Record<string, string> = {
+    TESTDAY: "Test Day",
+    PRACTICE1: "Essais libres",
+    PRACTICE2: "Essais libres 2",
+    PRACTICE3: "Essais libres 3",
+    PRACTICE4: "Essais libres 4",
+    QUALIFY1: "Qualifications 1",
+    QUALIFY2: "Qualifications 2",
+    QUALIFY3: "Qualifications 3",
+    QUALIFY4: "Qualifications 4",
+    WARMUP: "Warmup",
+    RACE1: "Course 1",
+    RACE2: "Course 2",
+    RACE3: "Course 3",
+    RACE4: "Course 4",
+  };
+  const currentSessionLabel =
+    (session.sessionCode && sessionCodeLabels[session.sessionCode]) ||
+    phaseLabel[session.phase];
+  const displaySessionLabel = formatSessionDisplayLabel(currentSessionLabel);
+  const sessionTimeRemaining = formatRFactorDuration(
+    session.sessionTimeRemaining ?? session.elapsedTime,
+  );
   const hasActiveFlags = session.flags.length > 0;
-  const activeYellow = session.flags.find((f) => f.type === "yellow");
-  const activeRed = session.flags.find((f) => f.type === "red");
+
+  const temperatureLabel = (value: number | null) =>
+    value === null ? "Non disponible" : `${value.toFixed(1)} °C`;
 
   return (
     <div className="border-y border-white/10 bg-[#0b1728]">
@@ -47,11 +73,17 @@ export function SessionBanner({ session }: SessionBannerProps) {
             <span className="text-sm font-bold text-gray-300">
               Session :{" "}
               <span className={`${phaseColor[session.phase]}`}>
-                {phaseLabel[session.phase]}
+                {displaySessionLabel}
               </span>
             </span>
-            <span className="rounded-full bg-white/[0.06] px-2.5 py-0.5 text-xs font-bold tabular-nums text-gray-300">
-              {session.elapsedTime}
+            <span
+              className="rounded-full bg-white/[0.06] px-2.5 py-0.5 text-xs font-bold tabular-nums text-gray-300"
+              title="Temps restant de la session"
+            >
+              <span className="mr-2 text-[10px] uppercase tracking-wide text-gray-500">
+                Temps restant
+              </span>
+              {sessionTimeRemaining}
             </span>
           </div>
 
@@ -59,11 +91,11 @@ export function SessionBanner({ session }: SessionBannerProps) {
           <div className="flex items-center gap-4">
             <span className="flex items-center gap-1.5 text-xs text-gray-400">
               <Thermometer className="h-3.5 w-3.5 text-orange-400" />
-              Piste <span className="font-bold text-white">{session.trackTemp}°C</span>
+              Piste <span className="font-bold text-white">{temperatureLabel(session.trackTemp)}</span>
             </span>
             <span className="flex items-center gap-1.5 text-xs text-gray-400">
               <Thermometer className="h-3.5 w-3.5 text-blue-400" />
-              Air <span className="font-bold text-white">{session.airTemp}°C</span>
+              Air <span className="font-bold text-white">{temperatureLabel(session.airTemp)}</span>
             </span>
           </div>
 
@@ -96,15 +128,15 @@ export function SessionBanner({ session }: SessionBannerProps) {
               ))
             ) : (
               <span className="flex items-center gap-1.5 text-xs text-gray-500">
-                <CheckCircle className="h-3.5 w-3.5 text-emerald-400" />
-                Aucun drapeau
+                <Flag className="h-3.5 w-3.5 text-gray-500" />
+                Drapeaux indisponibles
               </span>
             )}
           </div>
 
           {/* Heure serveur */}
-          <span className="text-xs font-mono text-gray-500">
-            {session.serverTime}
+          <span className="text-xs font-mono text-gray-500" title="Compteur source conservé à titre indicatif">
+            Uptime serveur : {formatRFactorDuration(session.serverTime)}
           </span>
         </div>
       </div>

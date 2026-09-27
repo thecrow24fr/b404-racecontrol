@@ -1,29 +1,19 @@
 import type { Metadata } from "next";
 import { LiveTimingClient } from "../_components/live-timing-client";
-import { mockLiveTimingData } from "../_data/live-timing-data";
+import { emptyLiveTimingData } from "../_data/empty-live-timing-data";
 
 export const metadata: Metadata = {
-  title: "Live Timing Premium — B404 RaceControl",
+  title: "Live Timing — B404 RaceControl",
   description:
-    "Suivez les sessions B404 en direct : classements en temps réel, temps au tour, informations serveur et météo.",
+    "Suivez les sessions B404 en direct : classement, temps au tour, informations serveur et météo.",
 };
 
 /**
- * Page Live Timing Premium — B404 RaceControl
+ * Page publique Live Timing.
  *
- * Affiche les données de course en direct.
- *
- * Architecture DataProvider :
- * - Priorité 1 : API native rFactor 2 (localhost:5397) si le jeu est lancé
- * - Fallback  : Données simulées (mock) pour le développement / static export
- *
- * La page reste un composant serveur pour le metadata SEO.
- * Le composant LiveTimingClient gère toute la logique de
- * détection de source et polling côté client.
- *
- * @see LiveTimingClient pour la logique de sélection de source
- * @see data-provider.ts pour l'interface IDataProvider
+ * La page ne contient aucun snapshot fictif : elle commence dans un état neutre
+ * puis interroge uniquement l’API publique RaceControl pour s20_vm.
  */
 export default function LiveTimingPage() {
-  return <LiveTimingClient initialData={mockLiveTimingData} />;
+  return <LiveTimingClient initialData={emptyLiveTimingData} sourceId="s20_vm" />;
 }

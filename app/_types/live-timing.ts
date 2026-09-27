@@ -1,16 +1,5 @@
-/**
- * Types pour le Live Timing Premium — B404 RaceControl
- *
- * Ces types définissent l'ensemble des structures de données utilisées
- * par la page Live Timing. Ils sont conçus pour être compatibles avec
- * les futures données réelles provenant de R2LA.
- *
- * @module live-timing
- */
+/** Contrat public du Live Timing RaceControl. */
 
-// ─── Énumérations ─────────────────────────────────────────────────────
-
-/** Phase de session en cours */
 export type SessionPhase =
   | "waiting"
   | "practice"
@@ -19,10 +8,14 @@ export type SessionPhase =
   | "finished"
   | "paused";
 
-/** Statut d'un serveur (étend le StatusType existant) */
-export type ServerStatus = "online" | "offline" | "starting" | "paused";
+export type ServerStatus =
+  | "online"
+  | "offline"
+  | "starting"
+  | "paused"
+  | "stale"
+  | "degraded";
 
-/** Type de drapeau affiché en piste */
 export type FlagType =
   | "green"
   | "yellow"
@@ -31,100 +24,147 @@ export type FlagType =
   | "chequered"
   | "white";
 
-/** Statut d'un pilote dans le classement */
-export type DriverStatus =
-  | "running"
-  | "pit"
-  | "out"
-  | "finished"
-  | "dnf";
+export type DriverStatus = "running" | "pit" | "out" | "finished" | "dnf";
 
-/** Catégorie de voiture */
-export type CarCategory = "GT3" | "Hypercar" | "LMP2" | "GT4" | "Porsche Cup";
+export type CarCategory =
+  | "GT3"
+  | "Hypercar"
+  | "LMP2"
+  | "GT4"
+  | "Porsche Cup"
+  | "Multi-classe"
+  | "Inconnue"
+  | string;
 
-// ─── Interfaces ───────────────────────────────────────────────────────
-
-/** Informations météo */
 export interface Weather {
   condition: string;
-  temperature: number;
-  windSpeed: number;
-  rainPercent: number;
-  /** Piste sèche / humide / mouillée */
-  trackCondition: "dry" | "damp" | "wet";
+  temperature: number | null;
+  windSpeed: number | null;
+  rainPercent: number | null;
+  trackCondition: "dry" | "damp" | "wet" | "unknown";
 }
 
-/** Information d'un drapeau */
 export interface Flag {
   type: FlagType;
   sector: number;
   reason?: string;
 }
 
-/** Informations générales du serveur de course */
 export interface ServerInfo {
   id: string;
+  sourceId?: string;
   name: string;
   circuit: string;
   category: CarCategory;
   weather: Weather;
-  driversCount: number;
-  maxDrivers: number;
+  driversCount: number | null;
+  maxDrivers: number | null;
   currentSession: string;
   timeRemaining: string;
   totalSessionTime: string;
-  lapsCompleted: number;
-  totalLaps: number;
+  lapsCompleted: number | null;
+  totalLaps: number | null;
+  /** Longueur de progression renvoyée par sessionInfo, en mètres. */
+  lapDistance?: number | null;
   status: ServerStatus;
 }
 
-/** Une entrée du classement (un pilote) */
 export interface StandingEntry {
   position: number;
+  /** Position officielle de départ issue du champ native qualification. */
+  startingPosition?: number | null;
+  /** Alias historique conservé pour les fixtures/providers existants. */
   prevPosition: number;
   driverName: string;
   team: string;
   car: string;
-  /** Numéro de la voiture (disponible via API rF2) */
   carNumber?: string;
   carClass: CarCategory;
   laps: number;
-  /** Écart au leader ("Leader" pour le premier) */
   gapToLeader: string;
-  /** Écart au pilote précédent */
   gapToNext: string;
   bestLap: string;
   lastLap: string;
   sector1: string;
   sector2: string;
-  sector3: string;
+  sector3: string | null;
   inPit: boolean;
   status: DriverStatus;
-  /** Nombre d'arrêts au stand */
   pitStops: number;
-  /** Meilleur tour absolu de la course */
   isPole?: boolean;
-  /** Carburant restant (0.0 → 1.0) */
-  fuel?: number;
-  /** DRS actif */
+  /** Valeur native fuelFraction ; aucune conversion en litres ou en pourcentage. */
+  fuelFraction?: number | null;
+  /** Position longitudinale native, en mètres lorsque fournie. */
+  lapDistance?: number | null;
+  /** Dérivée uniquement lorsque lapDistance et la longueur source existent. */
+  lapProgress?: number | null;
   drsActive?: boolean;
-  /** Nombre de pénalités */
   penalties?: number;
-  /** Identifiant Steam */
   steamID?: number;
 }
 
-/** Informations globales de la session */
 export interface SessionInfo {
   phase: SessionPhase;
+  sessionCode?: string;
+  inRealtime?: boolean;
   serverTime: string;
-  trackTemp: number;
-  airTemp: number;
+  trackTemp: number | null;
+  airTemp: number | null;
   flags: Flag[];
+  /** Temps restant de la session, dérivé du contrat endEventTime-currentEventTime. */
+  sessionTimeRemaining?: string;
+  /** Alias historique conservé pour les providers/fixtures existants. */
   elapsedTime: string;
 }
 
-/** Point de donnée de télémétrie minute par minute (préparé pour futur usage) */
+export interface RecordEntry {
+  session: string;
+  driverName: string;
+  car: string | null;
+  bestLap: string;
+  observedLaps: number | null;
+}
+
+export interface RecordsData {
+  available: boolean;
+  message: string;
+  entries: RecordEntry[];
+}
+
+export interface TyreCorner {
+  compound: string | null;
+  wear: number | null;
+  temperature: number | null;
+  pressure: number | null;
+}
+
+export interface TyreEvolutionPoint {
+  lap: number;
+  frontLeft: TyreCorner | null;
+  frontRight: TyreCorner | null;
+  rearLeft: TyreCorner | null;
+  rearRight: TyreCorner | null;
+}
+
+export interface TyreEntry {
+  driverName: string;
+  compound: string | null;
+  corners: {
+    frontLeft: TyreCorner;
+    frontRight: TyreCorner;
+    rearLeft: TyreCorner;
+    rearRight: TyreCorner;
+  };
+  evolution: TyreEvolutionPoint[];
+}
+
+export interface TyresData {
+  available: boolean;
+  message: string;
+  evolutionAvailable: boolean;
+  entries: TyreEntry[];
+}
+
 export interface TelemetryPoint {
   minute: number;
   driverName: string;
@@ -132,11 +172,14 @@ export interface TelemetryPoint {
   gapToLeader: number;
 }
 
-// ─── Conteneur principal ──────────────────────────────────────────────
-
-/** Données complètes du Live Timing pour un serveur */
 export interface LiveTimingData {
+  /** Public durations are formatted once from native rFactor 2 seconds. */
+  durationFormat?: "rFactor2-seconds-v1";
+  fetchedAt?: string;
+  sourceId?: string;
   server: ServerInfo;
   session: SessionInfo;
   standings: StandingEntry[];
+  records?: RecordsData;
+  tyres?: TyresData;
 }

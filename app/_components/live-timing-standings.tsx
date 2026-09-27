@@ -10,11 +10,35 @@ import {
   Wrench,
   TriangleAlert,
 } from "lucide-react";
-import type { StandingEntry } from "../_types/live-timing";
+import type { SessionPhase, StandingEntry } from "../_types/live-timing";
+import { formatSessionDisplayLabel } from "../_services/live-timing-session-labels";
 import { StandingRow } from "./live-timing-standing-row";
 
 interface StandingsTableProps {
   standings: StandingEntry[];
+  sessionName?: string;
+  sessionPhase?: SessionPhase;
+}
+
+function rankingSessionLabel(sessionName?: string, sessionPhase?: SessionPhase): string {
+  const normalized = sessionName?.trim();
+  if (normalized && !/^non disponible|^—$/i.test(normalized)) {
+    return formatSessionDisplayLabel(normalized);
+  }
+  switch (sessionPhase) {
+    case "practice":
+      return "Essais libres";
+    case "qualifying":
+      return "Qualifications";
+    case "race":
+      return "Course";
+    case "finished":
+      return "Session terminée";
+    case "paused":
+      return "Session en pause";
+    default:
+      return "Session";
+  }
 }
 
 /**
@@ -26,7 +50,11 @@ interface StandingsTableProps {
  * - 📊 Filtres / Tris (placeholder)
  * - 📥 Export (placeholder)
  */
-export function StandingsTable({ standings }: StandingsTableProps) {
+export function StandingsTable({
+  standings,
+  sessionName,
+  sessionPhase,
+}: StandingsTableProps) {
   if (standings.length === 0) {
     return (
       <section className="border-b border-white/10 bg-[#06101d]">
@@ -56,7 +84,7 @@ export function StandingsTable({ standings }: StandingsTableProps) {
               Classement
             </p>
             <h2 className="mt-1 text-2xl font-black text-white">
-              Course
+              Classement — {rankingSessionLabel(sessionName, sessionPhase)}
             </h2>
           </div>
 
@@ -108,7 +136,7 @@ export function StandingsTable({ standings }: StandingsTableProps) {
             <thead>
               <tr className="border-b border-white/10 bg-[#0b1728]">
                 <Th className="sticky left-0 z-10 w-12 bg-[#0b1728] text-left">#</Th>
-                <Th className="w-8 text-center"></Th>
+                <Th className="w-8 text-center">Départ</Th>
                 <Th className="text-left">Pilote</Th>
                 <Th className="hidden text-left lg:table-cell">Voiture</Th>
                 <Th className="w-14 text-center">Tours</Th>
@@ -116,6 +144,7 @@ export function StandingsTable({ standings }: StandingsTableProps) {
                 <Th className="hidden text-right md:table-cell">Au suivant</Th>
                 <Th className="hidden text-right lg:table-cell">Meilleur tour</Th>
                 <Th className="hidden text-right xl:table-cell">Secteurs</Th>
+                <Th className="hidden text-right 2xl:table-cell">Carburant</Th>
                 <Th className="w-16 text-right">Statut</Th>
               </tr>
             </thead>

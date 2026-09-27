@@ -59,7 +59,7 @@ const BASE_GAME_PORT = 5397;
 const WEBUI_OFFSET = -100;
 const PORT_INCREMENT = 3;
 const MAX_PROFILES = 7;
-export const RF2_INSTALL_PATH = "C:\\Serveur_RF2";
+export const RF2_INSTALL_PATH = "Y:\\B404_DEDICATED\\SERVEURS\\rfactor2-dedicated";
 
 /**
  * Génère la liste de tous les profils de serveurs possibles.
