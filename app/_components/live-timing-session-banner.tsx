@@ -58,6 +58,7 @@ export function SessionBanner({ session }: SessionBannerProps) {
   const sessionTimeRemaining = formatRFactorDuration(
     session.sessionTimeRemaining ?? session.elapsedTime,
   );
+  const serverUptimeLabel = session.serverUptime ?? "Non disponible";
   const hasActiveFlags = session.flags.length > 0;
 
   const temperatureLabel = (value: number | null) =>
@@ -118,7 +119,11 @@ export function SessionBanner({ session }: SessionBannerProps) {
                   {flag.type === "red" && "Drapeau rouge"}
                   {flag.type === "green" && "Drapeau vert"}
                   {flag.type === "chequered" && "Drapeau à damiers"}
-                  <span className="opacity-60">S{flag.sector}</span>
+                  {flag.sector > 0 ? (
+                    <span className="opacity-60">S{flag.sector}</span>
+                  ) : (
+                    <span className="opacity-60">Général</span>
+                  )}
                   {flag.reason && (
                     <span className="hidden italic opacity-60 sm:inline">
                       — {flag.reason}
@@ -135,8 +140,8 @@ export function SessionBanner({ session }: SessionBannerProps) {
           </div>
 
           {/* Heure serveur */}
-          <span className="text-xs font-mono text-gray-500" title="Compteur source conservé à titre indicatif">
-            Uptime serveur : {formatRFactorDuration(session.serverTime)}
+          <span className="text-xs font-mono text-gray-500" title="Uptime serveur fourni explicitement par la source">
+            Uptime serveur : {serverUptimeLabel}
           </span>
         </div>
       </div>

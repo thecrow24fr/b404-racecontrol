@@ -44,6 +44,9 @@ export interface Weather {
   trackCondition: "dry" | "damp" | "wet" | "unknown";
 }
 
+/** État local minimal du processus météo; ne prouve pas sa connexion. */
+export type WeatherClientStatus = "launched";
+
 export interface Flag {
   type: FlagType;
   sector: number;
@@ -64,13 +67,21 @@ export interface ServerInfo {
   totalSessionTime: string;
   lapsCompleted: number | null;
   totalLaps: number | null;
-  /** Longueur de progression renvoyée par sessionInfo, en mètres. */
+  /** Longueur canonique du catalogue Manager, en mètres, si la résolution est unique. */
+  trackLength?: number | null;
+  /** Source de la longueur canonique (par exemple GDB ou AIW). */
+  trackLengthSource?: string | null;
+  /** Identité exacte du layout résolue par Manager, utilisée pour charger l’AIW. */
+  trackTechnicalId?: string | null;
+  /** Longueur runtime renvoyée par sessionInfo, en mètres. */
   lapDistance?: number | null;
   status: ServerStatus;
 }
 
 export interface StandingEntry {
   position: number;
+  /** Identifiant public opaque, stable pendant une session pour confirmer une paire. */
+  participantId?: string;
   /** Position officielle de départ issue du champ native qualification. */
   startingPosition?: number | null;
   /** Alias historique conservé pour les fixtures/providers existants. */
@@ -83,12 +94,18 @@ export interface StandingEntry {
   laps: number;
   gapToLeader: string;
   gapToNext: string;
+  /** Écart natif numérique vers la voiture classée juste devant, en secondes. */
+  timeBehindNext?: number | null;
+  /** Identifiant public opaque de la voiture correspondant à timeBehindNext. */
+  nextParticipantId?: string | null;
   bestLap: string;
   lastLap: string;
   sector1: string;
   sector2: string;
   sector3: string | null;
   inPit: boolean;
+  /** État individuel explicite sous drapeau jaune, lorsque la source le fournit. */
+  underYellow?: boolean | null;
   status: DriverStatus;
   pitStops: number;
   isPole?: boolean;
@@ -107,6 +124,10 @@ export interface SessionInfo {
   phase: SessionPhase;
   sessionCode?: string;
   inRealtime?: boolean;
+  /** Uptime du Dedicated fourni explicitement par la source; absent sinon. */
+  serverUptime?: string | null;
+  /** Présence locale de rf2WeatherClient.exe; ne signifie pas « connecté ». */
+  weatherClientStatus?: WeatherClientStatus | null;
   serverTime: string;
   trackTemp: number | null;
   airTemp: number | null;

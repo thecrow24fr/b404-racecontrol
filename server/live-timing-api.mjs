@@ -1,8 +1,16 @@
 import http from "node:http";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { createTrackGeometryProvider } from "./track-geometry.mjs";
 
 const DEFAULT_TIMEOUT_MS = 5000;
+const DEFAULT_MANAGER_BASE_URL = "http://127.0.0.1:4000";
+const MANAGER_STATUS_PATH = "/api/view/servers/20";
+const WEATHER_CLIENT_IMAGE = "rf2WeatherClient.exe";
+const WEATHER_CLIENT_VM_SUFFIX = "_vm";
 const INT32_MAX = 2147483647;
 const STREAM_INTERVAL_MS = 500;
+const execFileAsync = promisify(execFile);
 
 /**
  * Explicit public source registry. The browser never receives these origins.
@@ -23,6 +31,8 @@ export const SOURCE_REGISTRY = Object.freeze({
     label: "Serveur 20 — Entraînement",
     description: "Source rFactor 2 d’entraînement",
     baseUrl: "http://127.0.0.1:5354",
+    managerDetailPath: MANAGER_STATUS_PATH,
+    managerProfile: "Serveur 20",
   }),
 });
 
@@ -48,6 +58,141 @@ const SOURCE_TIMEOUT_ERROR = "source_unavailable";
 function finiteNumber(value) {
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
+}
+
+export function parseWeatherClientTasklist(output) {
+  const expected = WEATHER_CLIENT_IMAGE.toLowerCase();
+  return String(output ?? "").split(/\r?\n/).some((line) => {
+    const imageName = line.split(",", 1)[0]?.trim().replace(/^"|"$/g, "");
+    return imageName?.toLowerCase() === expected;
+  });
+}
+
+async function defaultWeatherClientProbe() {
+  if (process.platform !== "win32") return false;
+
+  try {
+    const { stdout } = await execFileAsync(
+      "tasklist.exe",
+      ["/FI", `IMAGENAME eq ${WEATHER_CLIENT_IMAGE}`, "/FO", "CSV", "/NH"],
+      { timeout: 1500, windowsHide: true, maxBuffer: 64 * 1024 },
+    );
+    return parseWeatherClientTasklist(stdout);
+  } catch {
+    return false;
+  }
+}
+
+async function detectWeatherClient(sourceId, { probe = defaultWeatherClientProbe } = {}) {
+  if (
+    typeof sourceId !== "string" ||
+    !sourceId.endsWith(WEATHER_CLIENT_VM_SUFFIX) ||
+    typeof probe !== "function"
+  ) {
+    return null;
+  }
+
+  try {
+    return (await probe()) ? "launched" : null;
+  } catch {
+    return null;
+  }
+}
+
+function formatServerUptime(value) {
+  const seconds = finiteNumber(value);
+  if (seconds === null || seconds < 0) return null;
+
+  const totalSeconds = Math.floor(seconds);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const remainder = totalSeconds % 60;
+  const parts = [];
+  if (hours > 0) parts.push(`${hours}h`);
+  if (minutes > 0 || hours > 0) parts.push(`${minutes}m`);
+  parts.push(`${remainder}s`);
+  return parts.join(" ");
+}
+
+function managerBaseUrl(options = {}) {
+  return (
+    options.managerBaseUrl ??
+    process.env.RACECONTROL_MANAGER_URL ??
+    DEFAULT_MANAGER_BASE_URL
+  ).replace(/\/$/, "");
+}
+
+function resolveCanonicalTrackTechnicalId(body) {
+  const resolution = body?.card?.circuit_resolution;
+  const technicalId = publicText(resolution?.technical_id);
+  const candidateCount = finiteNumber(resolution?.candidate_count);
+  const status = publicText(resolution?.status).toLowerCase();
+  return technicalId && status === "matched" && candidateCount === 1
+    ? technicalId
+    : null;
+}
+
+function resolveCanonicalTrackLength(body) {
+  const card = body?.card;
+  const resolution = card?.circuit_resolution;
+  const lengthKm = finiteNumber(card?.circuit_length_km);
+  const candidateCount = finiteNumber(resolution?.candidate_count);
+  const status = publicText(resolution?.status).toLowerCase();
+  const source = publicText(resolution?.length_source || resolution?.source);
+
+  if (
+    lengthKm === null ||
+    lengthKm <= 0 ||
+    status !== "matched" ||
+    candidateCount !== 1 ||
+    !source
+  ) {
+    return null;
+  }
+
+  return {
+    meters: lengthKm * 1000,
+    source,
+    technicalId: resolveCanonicalTrackTechnicalId(body),
+  };
+}
+
+async function fetchManagerContext(source, { fetchImpl, timeoutMs, managerUrl }) {
+  const managerDetailPath = source?.managerDetailPath;
+  if (typeof managerDetailPath !== "string" || !managerDetailPath.startsWith("/api/view/servers/")) {
+    return { serverUptime: null, trackLength: null, trackTechnicalId: null };
+  }
+
+  const result = await requestJson(`${managerUrl}${managerDetailPath}`, {
+    fetchImpl,
+    timeoutMs,
+  });
+  const body = result.ok && result.body && typeof result.body === "object"
+    ? result.body
+    : null;
+  const health = body?.health;
+  const profile = publicText(body?.card?.profile);
+  const expectedProfile = publicText(source.managerProfile);
+  const pid = finiteNumber(health?.pid);
+  const uptime = finiteNumber(health?.uptime_s);
+  const serverUptime =
+    profile === expectedProfile &&
+    pid !== null &&
+    pid > 0 &&
+    uptime !== null &&
+    uptime >= 0
+      ? formatServerUptime(uptime)
+      : null;
+
+  const canonicalTrackLength = profile === expectedProfile
+    ? resolveCanonicalTrackLength(body)
+    : null;
+  return {
+    serverUptime,
+    trackLength: canonicalTrackLength,
+    trackTechnicalId:
+      profile === expectedProfile ? resolveCanonicalTrackTechnicalId(body) : null,
+  };
 }
 
 function publicText(value, fallback = "") {
@@ -152,8 +297,29 @@ function mapWeather(session) {
   };
 }
 
+function normalizedFlagState(value) {
+  const raw = value && typeof value === "object"
+    ? value.flag ?? value.state ?? value.type
+    : value;
+  return publicText(raw).toUpperCase().replace(/[\\s-]+/g, "_");
+}
+
+function isConfirmedYellow(value) {
+  const state = normalizedFlagState(value);
+  return state === "YELLOW" || state === "YELLOW_FLAG" || state === "YELLOWFLAG";
+}
+
 function mapFlags(session) {
-  const state = publicText(session.yellowFlagState).toUpperCase();
+  const sectorFlags = Array.isArray(session.sectorFlag) ? session.sectorFlag : [];
+  const yellowSectors = sectorFlags
+    .slice(0, 3)
+    .map((value, index) => isConfirmedYellow(value) ? index + 1 : null)
+    .filter((sector) => sector !== null);
+  if (yellowSectors.length > 0) {
+    return yellowSectors.map((sector) => ({ type: "yellow", sector }));
+  }
+
+  const state = normalizedFlagState(session.yellowFlagState);
   if (!state) return [];
   if (state !== "NONE" && state !== "INVALID") {
     return [{ type: "yellow", sector: 0 }];
@@ -293,6 +459,22 @@ function buildRecords(history, fallbackSession) {
       };
 }
 
+function publicParticipantId(vehicle) {
+  const slotId = finiteNumber(vehicle?.slotID);
+  const driverName = publicText(vehicle?.driverName, "Pilote");
+  const carNumber = publicText(vehicle?.carNumber, "");
+  const identity = slotId !== null
+    ? `slot:${Math.trunc(slotId)}`
+    : `driver:${driverName}|car:${carNumber}`;
+
+  let hash = 2166136261;
+  for (const character of identity) {
+    hash ^= character.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `p${(hash >>> 0).toString(36).padStart(7, "0")}`;
+}
+
 function buildStandings(vehicles, trackDistance) {
   const valid = vehicles
     .filter((vehicle) => vehicle && typeof vehicle === "object")
@@ -304,7 +486,7 @@ function buildStandings(vehicles, trackDistance) {
     return lap !== null && lap > 0 && lap < best ? lap : best;
   }, Number.POSITIVE_INFINITY);
 
-  return valid.map((vehicle) => {
+  const mapped = valid.map((vehicle) => {
     const position = finiteNumber(vehicle.position) ?? 0;
     const qualification = finiteNumber(vehicle.qualification) ?? position;
     const lapDistance = finiteNumber(vehicle.lapDistance);
@@ -315,6 +497,7 @@ function buildStandings(vehicles, trackDistance) {
     const startingPosition = qualification > 0 ? qualification : position;
     return {
       position,
+      participantId: publicParticipantId(vehicle),
       startingPosition,
       prevPosition: startingPosition,
       driverName: publicText(vehicle.driverName, "Pilote"),
@@ -333,12 +516,20 @@ function buildStandings(vehicles, trackDistance) {
         vehicle.lapsBehindNext,
         position === 1,
       ),
+      timeBehindNext: finiteNumber(vehicle.timeBehindNext),
+      nextParticipantId: null,
       bestLap: formatLapTime(vehicle.bestLapTime),
       lastLap: formatLapTime(vehicle.lastLapTime),
       sector1: formatLapTime(vehicle.bestSectorTime1),
       sector2: formatLapTime(vehicle.bestSectorTime2),
       sector3: null,
       inPit: vehicle.pitting === true || vehicle.pitState === "STOPPED",
+      underYellow:
+        typeof vehicle.underYellow === "boolean"
+          ? vehicle.underYellow
+          : isConfirmedYellow(vehicle.flag)
+            ? true
+            : null,
       status: mapStatus(vehicle),
       pitStops: finiteNumber(vehicle.pitstops) ?? 0,
       isPole: (finiteNumber(vehicle.bestLapTime) ?? -1) === bestLap,
@@ -348,6 +539,14 @@ function buildStandings(vehicles, trackDistance) {
       penalties: finiteNumber(vehicle.penalties) ?? 0,
     };
   });
+
+  const participantIdByPosition = new Map(
+    mapped.map((entry) => [entry.position, entry.participantId]),
+  );
+  return mapped.map((entry) => ({
+    ...entry,
+    nextParticipantId: participantIdByPosition.get(entry.position - 1) ?? null,
+  }));
 }
 
 function selectionTrackName(selection) {
@@ -356,7 +555,18 @@ function selectionTrackName(selection) {
   return publicText(track.name) || publicText(track.shortName);
 }
 
-function buildData(sourceId, session, vehicles, history, fetchedAt, selection) {
+function buildData(
+  sourceId,
+  session,
+  vehicles,
+  history,
+  fetchedAt,
+  selection,
+  serverUptime,
+  weatherClientStatus,
+  canonicalTrackLength,
+  trackTechnicalId,
+) {
   const sessionCode = publicText(session.session, "—");
   const trackDistance = finiteNumber(session.lapDistance);
   const standings = buildStandings(vehicles, trackDistance);
@@ -397,6 +607,9 @@ function buildData(sourceId, session, vehicles, history, fetchedAt, selection) {
         endEventTime === null ? "—" : formatRFactorDuration(Math.max(0, endEventTime)),
       lapsCompleted: standings.reduce((max, entry) => Math.max(max, entry.laps), 0),
       totalLaps: maxLaps === INT32_MAX ? null : maxLaps,
+      trackLength: canonicalTrackLength?.meters ?? null,
+      trackLengthSource: canonicalTrackLength?.source ?? null,
+      trackTechnicalId: trackTechnicalId ?? canonicalTrackLength?.technicalId ?? null,
       lapDistance: trackDistance,
       status: "online",
     },
@@ -404,6 +617,8 @@ function buildData(sourceId, session, vehicles, history, fetchedAt, selection) {
       phase: sessionPhase(sessionCode),
       sessionCode,
       inRealtime,
+      serverUptime: serverUptime ?? null,
+      weatherClientStatus: weatherClientStatus ?? null,
       serverTime:
         currentEventTime === null ? "—" : formatRFactorDuration(currentEventTime),
       trackTemp: finiteNumber(session.trackTemp),
@@ -484,6 +699,14 @@ export async function collectLiveTiming(sourceId, options = {}) {
         { fetchImpl, timeoutMs },
       );
   const history = historyResult?.ok ? historyResult.body : null;
+  const managerContext = await fetchManagerContext(source, {
+    fetchImpl,
+    timeoutMs,
+    managerUrl: managerBaseUrl(options),
+  });
+  const weatherClientStatus = await detectWeatherClient(sourceId, {
+    probe: options.weatherClientProbe,
+  });
 
   return {
     ok: true,
@@ -494,6 +717,10 @@ export async function collectLiveTiming(sourceId, options = {}) {
       history,
       now(),
       selection,
+      managerContext.serverUptime,
+      weatherClientStatus,
+      managerContext.trackLength,
+      managerContext.trackTechnicalId,
     ),
   };
 }
@@ -566,10 +793,13 @@ function writeSse(response, event, payload, sequence) {
   response.write(`${id}event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
 }
 
-class LiveTimingStreamHub {
-  constructor({ collect, registry }) {
+export class LiveTimingStreamHub {
+  constructor({ collect, registry, intervalMs = STREAM_INTERVAL_MS }) {
     this.collect = collect;
     this.registry = registry;
+    this.intervalMs = Number.isFinite(intervalMs)
+      ? Math.max(0, intervalMs)
+      : STREAM_INTERVAL_MS;
     this.states = new Map();
   }
 
@@ -673,7 +903,7 @@ class LiveTimingStreamHub {
       return;
     }
 
-    const delay = Math.max(0, STREAM_INTERVAL_MS - (Date.now() - startedAt));
+    const delay = Math.max(0, this.intervalMs - (Date.now() - startedAt));
     state.timer = setTimeout(() => {
       state.timer = null;
       void this.pump(state);
@@ -689,6 +919,11 @@ export function createPublicLiveTimingHandler(options = {}) {
       ...collectOptions,
       registry,
     }));
+  const geometryProvider = options.geometryProvider ?? createTrackGeometryProvider({
+    registry,
+    managerBaseUrl: managerBaseUrl(options),
+    timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+  });
   const streamHub = options.streamHub ?? new LiveTimingStreamHub({
     collect: (sourceId) => collect(sourceId, { includeHistory: false }),
     registry,
@@ -728,12 +963,41 @@ export function createPublicLiveTimingHandler(options = {}) {
       return;
     }
 
-    const streamSuffix = "/stream";
-    const isStream = pathname.endsWith(streamSuffix);
-    const sourceId = pathname
-      .slice(prefix.length, isStream ? -streamSuffix.length : undefined);
+    const relativePath = pathname.slice(prefix.length);
+    const [sourceId, resource = ""] = relativePath.split("/");
+    const isStream = resource === "stream";
+    const isGeometry = resource === "track-geometry";
     if (!Object.prototype.hasOwnProperty.call(registry, sourceId)) {
       writeJson(response, 404, { success: false, error: "unknown_source" });
+      return;
+    }
+    if (!isStream && !isGeometry && resource !== "") {
+      writeJson(response, 404, { success: false, error: "not_found" });
+      return;
+    }
+
+    if (isGeometry) {
+      try {
+        const geometry = await geometryProvider.getForSource(sourceId, {
+          fetchImpl: options.fetchImpl ?? globalThis.fetch,
+          sourceRegistry: registry,
+          managerUrl: managerBaseUrl(options),
+          requestTimeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+        });
+        writeJson(response, 200, {
+          success: true,
+          sourceId,
+          technicalId: geometry?.technicalId ?? null,
+          geometry,
+        });
+      } catch {
+        writeJson(response, 200, {
+          success: true,
+          sourceId,
+          technicalId: null,
+          geometry: null,
+        });
+      }
       return;
     }
 

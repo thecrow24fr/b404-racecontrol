@@ -139,10 +139,19 @@ export function LiveTimingClient({
       </div>
       <LiveTimingHero server={data.server} />
       <SessionBanner session={data.session} />
-      <ServerInfoPanel server={data.server} />
+      <ServerInfoPanel
+        server={data.server}
+        trackTemperature={data.session.trackTemp}
+        weatherClientStatus={data.session.weatherClientStatus}
+      />
       <LiveTimingTrackLine
+        sourceId={selectedSourceId}
+        trackTechnicalId={data.server.trackTechnicalId ?? null}
         lapDistance={data.server.lapDistance ?? null}
+        trackLength={data.server.trackLength ?? null}
+        trackLengthSource={data.server.trackLengthSource ?? null}
         standings={data.standings}
+        flags={data.session.flags}
       />
       <StandingsTable
         standings={data.standings}

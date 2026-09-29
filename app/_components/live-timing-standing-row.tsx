@@ -4,6 +4,7 @@ import {
   ChevronUp,
   ChevronDown,
   Minus,
+  Flag as FlagIcon,
   Wrench,
   TriangleAlert,
 } from "lucide-react";
@@ -39,7 +40,10 @@ export function StandingRow({ entry, isPole = false }: StandingRowProps) {
             <span className="text-xs leading-none text-orange-400">★</span>
           )}
           {entry.status === "pit" && (
-            <Wrench className="h-3 w-3 text-yellow-400" />
+            <Wrench className="h-3 w-3 text-cyan-300" />
+          )}
+          {entry.underYellow === true && (
+            <FlagIcon className="h-3 w-3 text-yellow-300" aria-label="Sous drapeau jaune" />
           )}
           {entry.status === "dnf" && (
             <TriangleAlert className="h-3 w-3 text-red-400" />
@@ -140,19 +144,26 @@ export function StandingRow({ entry, isPole = false }: StandingRowProps) {
 
       {/* Statut */}
       <td className="px-2 py-2.5 align-middle text-right sm:px-3">
-        {entry.inPit ? (
-          <span className="inline-flex items-center gap-1 rounded-full bg-yellow-500/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-yellow-400">
-            PIT
-          </span>
-        ) : entry.status === "dnf" ? (
-          <span className="inline-flex items-center gap-1 rounded-full bg-red-500/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-red-400">
-            DNF
-          </span>
-        ) : entry.status === "finished" ? (
-          <span className="inline-flex items-center gap-1 rounded-full bg-blue-500/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-blue-400">
-            FIN
-          </span>
-        ) : null}
+        <div className="flex flex-wrap items-center justify-end gap-1">
+          {entry.underYellow === true ? (
+            <span className="inline-flex items-center gap-1 rounded-full bg-yellow-500/20 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-yellow-300">
+              JAUNE
+            </span>
+          ) : null}
+          {entry.inPit ? (
+            <span className="inline-flex items-center gap-1 rounded-full bg-cyan-500/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-cyan-300">
+              PIT
+            </span>
+          ) : entry.status === "dnf" ? (
+            <span className="inline-flex items-center gap-1 rounded-full bg-red-500/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-red-400">
+              DNF
+            </span>
+          ) : entry.status === "finished" ? (
+            <span className="inline-flex items-center gap-1 rounded-full bg-blue-500/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-blue-400">
+              FIN
+            </span>
+          ) : null}
+        </div>
       </td>
     </tr>
   );

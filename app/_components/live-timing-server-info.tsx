@@ -10,12 +10,14 @@ import {
   Gauge,
   CircleDot,
 } from "lucide-react";
-import type { ServerInfo } from "../_types/live-timing";
+import type { ServerInfo, WeatherClientStatus } from "../_types/live-timing";
 import { formatRFactorDuration } from "../_services/live-timing-formatters";
 import { formatSessionDisplayLabel } from "../_services/live-timing-session-labels";
 
 interface ServerInfoPanelProps {
   server: ServerInfo;
+  trackTemperature: number | null;
+  weatherClientStatus?: WeatherClientStatus | null;
 }
 
 function numberLabel(value: number | null, suffix = ""): string {
@@ -36,7 +38,7 @@ function lapsLabel(value: number | null, total: number | null): string {
   return `${value} / ${total} tours`;
 }
 
-export function ServerInfoPanel({ server }: ServerInfoPanelProps) {
+export function ServerInfoPanel({ server, trackTemperature, weatherClientStatus }: ServerInfoPanelProps) {
   const statusLabel: Record<string, string> = {
     online: "Source accessible",
     offline: "Hors ligne",
@@ -118,11 +120,15 @@ export function ServerInfoPanel({ server }: ServerInfoPanelProps) {
             label="Météo"
             value={server.weather.condition}
             sub={numberLabel(server.weather.temperature, "°C")}
+            detail={weatherClientStatus === "launched" ? "Météo réelle démarrée" : undefined}
+            detailClassName="mt-2 inline-flex max-w-full items-center rounded-full border border-cyan-200/70 bg-cyan-300/20 px-2.5 py-1.5 text-[11px] font-extrabold leading-4 text-cyan-50 ring-1 ring-cyan-200/20"
           />
           <InfoCard
             icon={<CircleDot className="h-4 w-4 text-orange-400" />}
             label="Piste"
             value={trackConditionLabel[server.weather.trackCondition] ?? "Non disponible"}
+            sub={numberLabel(trackTemperature, "°C")}
+            detail={lapsLabel(server.lapsCompleted, server.totalLaps)}
             className={trackConditionColor[server.weather.trackCondition] ?? "text-gray-400"}
           />
           <InfoCard
@@ -134,7 +140,6 @@ export function ServerInfoPanel({ server }: ServerInfoPanelProps) {
             icon={<Thermometer className="h-4 w-4 text-orange-400" />}
             label="Pluie"
             value={numberLabel(server.weather.rainPercent, "%")}
-            sub={lapsLabel(server.lapsCompleted, server.totalLaps)}
           />
         </div>
       </div>
@@ -147,10 +152,20 @@ interface InfoCardProps {
   label: string;
   value: string;
   sub?: string;
+  detail?: string;
+  detailClassName?: string;
   className?: string;
 }
 
-function InfoCard({ icon, label, value, sub, className = "text-white" }: InfoCardProps) {
+function InfoCard({
+  icon,
+  label,
+  value,
+  sub,
+  detail,
+  detailClassName,
+  className = "text-white",
+}: InfoCardProps) {
   return (
     <div className="group flex items-start gap-3 rounded-2xl border border-white/10 bg-[#0d1b2e] p-4 transition duration-200 hover:-translate-y-0.5 hover:border-orange-400/30 hover:shadow-lg hover:shadow-orange-500/5">
       <div className="mt-0.5 shrink-0">{icon}</div>
@@ -158,6 +173,7 @@ function InfoCard({ icon, label, value, sub, className = "text-white" }: InfoCar
         <p className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-500">{label}</p>
         <p className={`mt-0.5 truncate text-sm font-bold ${className}`}>{value}</p>
         {sub && <p className="mt-0.5 text-xs text-gray-500">{sub}</p>}
+        {detail && <p className={detailClassName ?? "mt-0.5 text-xs text-gray-500"}>{detail}</p>}
       </div>
     </div>
   );

@@ -81,7 +81,6 @@ export function useLiveTiming(
   const [transport, setTransport] = useState<LiveTimingTransport>("connecting");
 
   const mountedRef = useRef(true);
-
   const applyResult = useCallback((result: {
     data: LiveTimingData;
     source: string;
@@ -97,6 +96,18 @@ export function useLiveTiming(
     setIsLoading(false);
   }, []);
 
+  const clearUnavailableData = useCallback((message: string) => {
+    if (!mountedRef.current) return;
+    setSource(sourceId);
+    setError(message);
+    setIsLive(false);
+    setIsLoading(false);
+    setLastUpdated(null);
+    setTransport("reconnecting");
+    const recoveryData = emptyDataForSource(sourceId);
+    setData(recoveryData);
+  }, [sourceId]);
+
   const refresh = useCallback(async () => {
     const provider = new PublicLiveTimingProvider(sourceId);
     if (mountedRef.current) setIsLoading(true);
@@ -106,11 +117,9 @@ export function useLiveTiming(
     } catch (reason) {
       if (!mountedRef.current) return;
       const message = reason instanceof Error ? reason.message : "Live Timing indisponible";
-      setError(message);
-      setIsLive(false);
-      setIsLoading(false);
+      clearUnavailableData(message);
     }
-  }, [applyResult, sourceId]);
+  }, [applyResult, clearUnavailableData, sourceId]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -123,25 +132,7 @@ export function useLiveTiming(
       },
       (status) => {
         if (!mountedRef.current) return;
-        setSource(sourceId);
-        setError(status.error);
-        setIsLive(false);
-        setIsLoading(false);
-        setTransport("reconnecting");
-        setData((previous) => ({
-          ...(previous.sourceId === sourceId
-            ? previous
-            : emptyDataForSource(sourceId)),
-          server: {
-            ...(previous.sourceId === sourceId
-              ? previous.server
-              : emptyDataForSource(sourceId).server),
-            status:
-              previous.sourceId === sourceId && previous.server.status !== "offline"
-                ? "stale"
-                : "offline",
-          },
-        }));
+        clearUnavailableData(status.error);
       },
     );
 
@@ -149,7 +140,7 @@ export function useLiveTiming(
       mountedRef.current = false;
       closeStream();
     };
-  }, [applyResult, sourceId]);
+  }, [applyResult, clearUnavailableData, sourceId]);
 
   const hasCurrentData = data.sourceId === sourceId;
   const visibleData = hasCurrentData ? data : emptyDataForSource(sourceId);
