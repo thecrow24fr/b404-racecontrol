@@ -1,10 +1,11 @@
 "use client";
 
-import type { ServerInfo } from "../_types/live-timing";
+import type { ServerInfo, ServerStatus } from "../_types/live-timing";
 import { formatSessionDisplayLabel } from "../_services/live-timing-session-labels";
 
 interface LiveTimingHeroProps {
   server: ServerInfo;
+  statusOverride?: ServerStatus;
 }
 
 const STATUS_LABELS: Record<ServerInfo["status"], string> = {
@@ -29,7 +30,8 @@ const STATUS_STYLES: Record<ServerInfo["status"], string> = {
  * Hero dédié à la page Live Timing.
  * Affiche le titre, le statut et le contexte de session.
  */
-export function LiveTimingHero({ server }: LiveTimingHeroProps) {
+export function LiveTimingHero({ server, statusOverride }: LiveTimingHeroProps) {
+  const status = statusOverride ?? server.status;
   const sessionLabel =
     server.currentSession === "Non disponible" || server.currentSession === "--"
       ? "—"
@@ -84,11 +86,11 @@ export function LiveTimingHero({ server }: LiveTimingHeroProps) {
             <span className="inline-flex items-center gap-2">
               <span
                 className={`inline-block h-1.5 w-1.5 rounded-full ${
-                  STATUS_STYLES[server.status]
-                } ${server.status === "online" ? "animate-glow-pulse" : ""}`}
+                  STATUS_STYLES[status]
+                } ${status === "online" ? "animate-glow-pulse" : ""}`}
               />
               <span className="text-xs font-black uppercase tracking-[0.18em] text-gray-300">
-                {STATUS_LABELS[server.status]}
+                {STATUS_LABELS[status]}
               </span>
             </span>
           </div>

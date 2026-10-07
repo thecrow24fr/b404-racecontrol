@@ -17,6 +17,11 @@ const API_BASE_URL = (process.env.NEXT_PUBLIC_LIVE_TIMING_API_URL ?? "").replace
 const API_PATH = `${API_BASE_URL}/api/public/live-timing`;
 const FETCH_TIMEOUT = 8000;
 
+export function publicLiveTimingApiUrl(path: string): string {
+  const suffix = path.startsWith("/") ? path : `/${path}`;
+  return `${API_PATH}${suffix}`;
+}
+
 interface PublicApiResponse {
   success?: boolean;
   data?: LiveTimingData;
@@ -59,7 +64,7 @@ function toPublicError(code: string | undefined): string {
 }
 
 export async function fetchLiveTimingSources(): Promise<LiveTimingSourceOption[]> {
-  const response = await window.fetch(`${API_PATH}/sources`, {
+  const response = await window.fetch(publicLiveTimingApiUrl("/sources"), {
     method: "GET",
     headers: { Accept: "application/json" },
     cache: "no-store",
@@ -125,7 +130,7 @@ export class PublicLiveTimingProvider implements IDataProvider {
     const timeoutId = window.setTimeout(() => controller.abort(), FETCH_TIMEOUT);
 
     try {
-      const response = await window.fetch(`${API_PATH}/${this.sourceId}`, {
+      const response = await window.fetch(publicLiveTimingApiUrl(`/${this.sourceId}`), {
         method: "GET",
         headers: { Accept: "application/json" },
         cache: "no-store",
@@ -161,7 +166,7 @@ export class PublicLiveTimingProvider implements IDataProvider {
     onSnapshot: (result: ProviderResult) => void,
     onStatus: (status: { error: string; sourceStatus?: string }) => void,
   ): () => void {
-    const eventSource = new EventSource(`${API_PATH}/${this.sourceId}/stream`);
+    const eventSource = new EventSource(publicLiveTimingApiUrl(`/${this.sourceId}/stream`));
 
     const handleSnapshot = (event: Event) => {
       try {

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { LiveTimingData } from "../_types/live-timing";
 import { emptyLiveTimingData } from "../_data/empty-live-timing-data";
 import { decodeLegacyRFactorDuration } from "./live-timing-formatters";
+import { preserveLastGoodSnapshot } from "./live-timing-error-recovery.mjs";
 import {
   LIVE_TIMING_SOURCE_ID,
   PublicLiveTimingProvider,
@@ -79,6 +80,8 @@ export function useLiveTiming(
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [transport, setTransport] = useState<LiveTimingTransport>("connecting");
+  const dataRef = useRef(initialData);
+  const lastUpdatedRef = useRef<Date | null>(null);
 
   const mountedRef = useRef(true);
   const applyResult = useCallback((result: {
@@ -88,6 +91,9 @@ export function useLiveTiming(
   }) => {
     if (!mountedRef.current) return;
     const normalizedData = normalizeLiveTimingDurations(result.data);
+    const receivedAt = new Date(result.fetchedAt);
+    dataRef.current = normalizedData;
+    lastUpdatedRef.current = receivedAt;
     setData(normalizedData);
     setSource(result.source);
     setIsLive(normalizedData.server.status === "online");
@@ -102,10 +108,21 @@ export function useLiveTiming(
     setError(message);
     setIsLive(false);
     setIsLoading(false);
-    setLastUpdated(null);
     setTransport("reconnecting");
-    const recoveryData = emptyDataForSource(sourceId);
-    setData(recoveryData);
+    const hasGoodSnapshot = lastUpdatedRef.current !== null || (
+      dataRef.current.server.status === "online" && dataRef.current.standings.length > 0
+    );
+    const recoveryData = preserveLastGoodSnapshot(dataRef.current, sourceId, hasGoodSnapshot);
+    if (recoveryData) {
+      dataRef.current = recoveryData;
+      setData(recoveryData);
+    } else {
+      const emptyData = emptyDataForSource(sourceId);
+      dataRef.current = emptyData;
+      lastUpdatedRef.current = null;
+      setLastUpdated(null);
+      setData(emptyData);
+    }
   }, [sourceId]);
 
   const refresh = useCallback(async () => {

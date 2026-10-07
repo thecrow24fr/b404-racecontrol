@@ -1,8 +1,21 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Gauge, Map as MapIcon } from "lucide-react";
 import type { Flag, StandingEntry } from "../_types/live-timing";
+import { publicLiveTimingApiUrl } from "../_services/public-live-timing-provider";
+import { getMarkerPalette } from "../_services/live-timing-visual-theme";
+import { fetchTrackGeometryPayload } from "../_services/live-timing-track-geometry-loader.mjs";
+import {
+  getAnimatedLapDistance,
+  MAX_MARKER_ANIMATION_DISTANCE,
+  retargetMarkerMotion,
+  VISUAL_MARKER_ANIMATION_DURATION_MS,
+} from "../_services/live-timing-track-motion";
+import type {
+  MarkerMotionInput,
+  MarkerMotionPlan,
+} from "../_services/live-timing-track-motion";
 
 interface TrackGeometryPoint {
   x: number;
@@ -10,15 +23,24 @@ interface TrackGeometryPoint {
   distance: number;
 }
 
+interface TrackSectorBounds {
+  sector: number;
+  startDistance: number;
+  endDistance: number;
+}
+
 interface TrackGeometry {
   technicalId: string;
   lapLength: number;
   viewBox: string;
   points: TrackGeometryPoint[];
+  /** Explicit native/AIW sector distances only; never inferred from lap thirds. */
+  sectorBounds: TrackSectorBounds[];
 }
 
 interface LiveTimingTrackLineProps {
   sourceId: string;
+  sessionKey: string;
   trackTechnicalId: string | null;
   lapDistance: number | null;
   trackLength: number | null;
@@ -42,6 +64,55 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
+function parseSectorBounds(value: unknown, lapLength: number): TrackSectorBounds[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter(isRecord)
+    .map((candidate) => ({
+      sector: Number(candidate.sector),
+      startDistance: Number(candidate.startDistance),
+      endDistance: Number(candidate.endDistance),
+    }))
+    .filter(
+      (candidate) => Number.isInteger(candidate.sector)
+        && candidate.sector >= 1
+        && candidate.sector <= 3
+        && Number.isFinite(candidate.startDistance)
+        && Number.isFinite(candidate.endDistance)
+        && candidate.startDistance >= 0
+        && candidate.endDistance > candidate.startDistance
+        && candidate.endDistance <= lapLength,
+    )
+    .sort((first, second) => first.sector - second.sector);
+}
+
+function deriveSector3Bounds(
+  sectorBounds: TrackSectorBounds[],
+  lapLength: number,
+): TrackSectorBounds[] {
+  if (sectorBounds.some((bounds) => bounds.sector === 3)) return sectorBounds;
+  const sector1 = sectorBounds.find((bounds) => bounds.sector === 1);
+  const sector2 = sectorBounds.find((bounds) => bounds.sector === 2);
+  if (
+    !sector1
+    || !sector2
+    || sector1.endDistance > sector2.startDistance
+    || sector2.endDistance >= lapLength
+  ) {
+    return sectorBounds;
+  }
+
+  // S3 is the verified complement from the explicit end of S2 to the AIW lap line.
+  return [
+    ...sectorBounds,
+    {
+      sector: 3,
+      startDistance: sector2.endDistance,
+      endDistance: lapLength,
+    },
+  ].sort((first, second) => first.sector - second.sector);
+}
+
 function parseGeometryPayload(payload: unknown, technicalId: string): TrackGeometry | null {
   if (!isRecord(payload) || payload.success !== true || !isRecord(payload.geometry)) return null;
   const candidate = payload.geometry;
@@ -62,7 +133,14 @@ function parseGeometryPayload(payload: unknown, technicalId: string): TrackGeome
         && Number.isFinite(point.distance),
     );
   if (points.length < 3) return null;
-  return { technicalId, lapLength, viewBox: candidate.viewBox, points };
+  const sectorBounds = parseSectorBounds(candidate.sectorBounds, lapLength);
+  return {
+    technicalId,
+    lapLength,
+    viewBox: candidate.viewBox,
+    points,
+    sectorBounds: deriveSector3Bounds(sectorBounds, lapLength),
+  };
 }
 
 function geometryCacheStorageKey(sourceId: string, technicalId: string): string {
@@ -108,11 +186,10 @@ function refreshTrackGeometry(sourceId: string, technicalId: string): Promise<Tr
   const inFlight = geometryCache.get(cacheKey);
   if (inFlight) return inFlight;
 
-  const request = fetch(`/api/public/live-timing/${encodeURIComponent(sourceId)}/track-geometry`, {
-    cache: "no-store",
-    headers: { Accept: "application/json" },
-  })
-    .then((response) => response.ok ? response.json() as Promise<unknown> : null)
+  const request = fetchTrackGeometryPayload(
+    publicLiveTimingApiUrl(`/${encodeURIComponent(sourceId)}/track-geometry`),
+    technicalId,
+  )
     .then((payload) => parseGeometryPayload(payload, technicalId))
     .then((geometry) => {
       if (geometry) writeCachedTrackGeometry(sourceId, geometry);
@@ -235,6 +312,11 @@ const DEFAULT_VIEWPORT_ASPECT_RATIO = 3;
 interface DisplayGeometryFit {
   viewBox: string;
   transform: string;
+  minX: number;
+  minY: number;
+  width: number;
+  height: number;
+  badgeBandHeight: number;
 }
 
 interface GeometryMarkerPlacement {
@@ -242,16 +324,80 @@ interface GeometryMarkerPlacement {
   point: { x: number; y: number };
 }
 
-function isActiveOnTrack(entry: StandingEntry): boolean {
-  return entry.status === "running" && !entry.inPit;
+interface MarkerAnimationState {
+  input: MarkerMotionInput;
+  plan: MarkerMotionPlan;
+  startedAt: number;
 }
 
-function parseViewBox(viewBox: string): { x: number; y: number; width: number; height: number } | null {
-  const values = viewBox.trim().split(/\s+/).map(Number);
-  if (values.length !== 4 || values.some((value) => !Number.isFinite(value))) return null;
-  const [x, y, width, height] = values;
-  if (width <= 0 || height <= 0) return null;
-  return { x, y, width, height };
+interface SectorBadgePlacement {
+  x: number;
+  y: number;
+}
+
+const SECTOR_BADGE_BAND_HEIGHT = 48;
+const SECTOR_BADGE_WIDTH = 84;
+const SECTOR_BADGE_HEIGHT = 24;
+
+function getMarkerIdentity(entry: StandingEntry): string {
+  const participantId = entry.participantId?.trim();
+  return participantId ? `participant:${participantId}` : `driver:${entry.driverName}`;
+}
+
+function getMarkerMotionInput(entry: StandingEntry): MarkerMotionInput | null {
+  if (entry.lapDistance === null || entry.lapDistance === undefined || !Number.isFinite(entry.lapDistance)) {
+    return null;
+  }
+  return {
+    lapDistance: entry.lapDistance,
+    inPit: entry.inPit === true,
+    status: entry.status,
+  };
+}
+
+function getSectorAnchor(
+  geometry: TrackGeometry,
+  sector: number,
+): { x: number; y: number } | null {
+  const bounds = geometry.sectorBounds.find((candidate) => candidate.sector === sector);
+  if (!bounds) return null;
+  return interpolateGeometryPoint(
+    geometry,
+    bounds.startDistance + (bounds.endDistance - bounds.startDistance) / 2,
+  );
+}
+
+function getSectorPath(geometry: TrackGeometry, sector: number): string | null {
+  const bounds = geometry.sectorBounds.find((candidate) => candidate.sector === sector);
+  if (!bounds) return null;
+  const start = interpolateGeometryPoint(geometry, bounds.startDistance);
+  const end = interpolateGeometryPoint(geometry, bounds.endDistance);
+  if (!start || !end) return null;
+  const points = [
+    start,
+    ...geometry.points
+      .filter((point) => point.distance > bounds.startDistance && point.distance < bounds.endDistance)
+      .map((point) => ({ x: point.x, y: point.y })),
+    end,
+  ];
+  return points.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`).join(" ");
+}
+
+function getSectorBadgePlacement(
+  fit: DisplayGeometryFit,
+  index: number,
+  count: number,
+): SectorBadgePlacement {
+  const columns = Math.max(1, Math.min(count, 3));
+  const slotWidth = fit.width / columns;
+  return {
+    x: fit.minX + slotWidth * (index % columns) + slotWidth / 2,
+    y: fit.minY + fit.badgeBandHeight / 2,
+  };
+}
+
+function isActiveOnTrack(entry: StandingEntry): boolean {
+  return entry.status === "running" && !entry.inPit;
 }
 
 function rotateDisplayPoint(point: { x: number; y: number }, rotation: number) {
@@ -280,12 +426,23 @@ function getGeometryMarkerPlacements(
 function fitGeometryForDisplay(
   geometry: TrackGeometry,
   viewportAspectRatio: number,
+  yellowBadgeCount: number,
 ): DisplayGeometryFit {
+  const badgeBandHeight = yellowBadgeCount > 0 ? SECTOR_BADGE_BAND_HEIGHT : 0;
   const validPoints = geometry.points.filter(
     (point) => Number.isFinite(point.x) && Number.isFinite(point.y),
   );
   if (validPoints.length < 3 || !Number.isFinite(viewportAspectRatio) || viewportAspectRatio <= 0) {
-    return { viewBox: geometry.viewBox, transform: "" };
+    const [minX, minY, width, height] = geometry.viewBox.split(/\s+/).map(Number);
+    return {
+      viewBox: geometry.viewBox,
+      transform: "",
+      minX: Number.isFinite(minX) ? minX : 0,
+      minY: Number.isFinite(minY) ? minY : 0,
+      width: Number.isFinite(width) ? width : 1,
+      height: Number.isFinite(height) ? height : 1,
+      badgeBandHeight,
+    };
   }
 
   const candidates = [0, 90].map((rotation) => {
@@ -295,13 +452,14 @@ function fitGeometryForDisplay(
     const minY = Math.min(...transformed.map((point) => point.y));
     const maxY = Math.max(...transformed.map((point) => point.y));
     const width = maxX - minX + MARKER_SAFE_MARGIN * 2;
-    const height = maxY - minY + MARKER_SAFE_MARGIN * 2;
+    const height = maxY - minY + MARKER_SAFE_MARGIN * 2 + badgeBandHeight;
     return {
       rotation,
       minX: minX - MARKER_SAFE_MARGIN,
-      minY: minY - MARKER_SAFE_MARGIN,
+      minY: minY - MARKER_SAFE_MARGIN - badgeBandHeight,
       width,
       height,
+      badgeBandHeight,
       scale: Math.min(viewportAspectRatio / width, 1 / height),
     };
   });
@@ -312,6 +470,11 @@ function fitGeometryForDisplay(
   return {
     viewBox: `${best.minX} ${best.minY} ${best.width} ${best.height}`,
     transform: best.rotation === 90 ? "rotate(90)" : "",
+    minX: best.minX,
+    minY: best.minY,
+    width: best.width,
+    height: best.height,
+    badgeBandHeight: best.badgeBandHeight,
   };
 }
 
@@ -327,19 +490,18 @@ function fallbackLine(markers: StandingEntry[]) {
         const left = `${(entry.lapProgress ?? 0) * 100}%`;
         const marker = String(entry.position);
         const carNumber = entry.carNumber?.trim();
-        const fallbackMarkerTone = entry.underYellow === true
-          ? "border-yellow-200 bg-yellow-400 shadow-yellow-500/25"
-          : entry.inPit
-            ? "border-cyan-200 bg-cyan-500 shadow-cyan-500/25"
-            : "border-orange-200 bg-orange-500 shadow-orange-500/25";
+        const markerPalette = getMarkerPalette(entry.carClass, entry.inPit === true);
         return (
           <div
-            key={`${entry.position}-${entry.driverName}`}
+            key={getMarkerIdentity(entry)}
             className="group absolute top-1/2 -translate-x-1/2 -translate-y-1/2"
             style={{ left }}
             title={`Position ${marker} — ${entry.driverName}${carNumber ? ` — voiture #${carNumber}` : ""}`}
           >
-            <span className={`flex h-8 min-w-8 items-center justify-center rounded-full border-2 px-2 text-xs font-black text-[#06101d] shadow-lg ${fallbackMarkerTone} transition group-hover:scale-110`}>
+            <span
+              className="flex h-8 min-w-8 items-center justify-center rounded-full border-2 px-2 text-xs font-black text-[#06101d] shadow-lg transition group-hover:scale-110"
+              style={{ backgroundColor: markerPalette.fill, borderColor: markerPalette.stroke }}
+            >
               {marker}
             </span>
             <span className="pointer-events-none absolute left-1/2 top-10 hidden -translate-x-1/2 whitespace-nowrap rounded bg-[#06101d] px-2 py-1 text-[10px] text-white shadow-xl group-hover:block">
@@ -355,6 +517,7 @@ function fallbackLine(markers: StandingEntry[]) {
 /** Vue Live générique : tracé AIW mis en cache, marqueurs interpolés par lapDistance. */
 export function LiveTimingTrackLine({
   sourceId,
+  sessionKey,
   trackTechnicalId,
   lapDistance,
   trackLength,
@@ -402,10 +565,6 @@ export function LiveTimingTrackLine({
     return () => observer.disconnect();
   }, [geometry]);
 
-  const fittedGeometry = useMemo(
-    () => geometry ? fitGeometryForDisplay(geometry, viewportAspectRatio) : null,
-    [geometry, viewportAspectRatio],
-  );
   const yellowSectors = useMemo(
     () => [...new Set(
       flags
@@ -414,15 +573,18 @@ export function LiveTimingTrackLine({
     )].sort((first, second) => first - second),
     [flags],
   );
-  const yellowFlagLabels = yellowSectors.length > 0
-    ? yellowSectors.map((sector) => `S${sector}`)
-    : flags.some((flag) => flag.type === "yellow" && flag.sector === 0)
-      ? ["JAUNE"]
-      : [];
-  const displayViewBox = useMemo(
-    () => geometry ? parseViewBox(fittedGeometry?.viewBox ?? geometry.viewBox) : null,
-    [fittedGeometry, geometry],
+  const fittedGeometry = useMemo(
+    () => geometry ? fitGeometryForDisplay(geometry, viewportAspectRatio, yellowSectors.length) : null,
+    [geometry, viewportAspectRatio, yellowSectors.length],
   );
+  const missingYellowSectorBounds = yellowSectors.filter(
+    (sector) => !geometry?.sectorBounds.some((bounds) => bounds.sector === sector),
+  );
+  const yellowFlagNotice = missingYellowSectorBounds.length > 0
+    ? `Drapeau jaune — secteurs source ${missingYellowSectorBounds.map((sector) => `S${sector}`).join(", ")}; bornes sectorielles AIW non fournies : portion du tracé non colorée.`
+    : flags.some((flag) => flag.type === "yellow" && flag.sector === 0)
+      ? "Drapeau jaune général — secteur AIW non localisable depuis la source."
+      : null;
 
   const geometryMarkers = useMemo(
     () => geometry
@@ -437,6 +599,71 @@ export function LiveTimingTrackLine({
       : [],
     [geometry, standings],
   );
+  const markerAnimationsRef = useRef(new Map<string, MarkerAnimationState>());
+  const markerElementsRef = useRef(new Map<string, SVGGElement>());
+  const previousSessionKeyRef = useRef(sessionKey);
+
+  useLayoutEffect(() => {
+    const animations = markerAnimationsRef.current;
+    if (previousSessionKeyRef.current !== sessionKey) {
+      animations.clear();
+      previousSessionKeyRef.current = sessionKey;
+    }
+    if (!geometry || !sessionKey) {
+      animations.clear();
+      return undefined;
+    }
+
+    let cancelled = false;
+    let frameId: number | null = null;
+    const now = performance.now();
+    const visibleMarkerIds = new Set<string>();
+    const nextEntries = standings.filter((entry) => getMarkerMotionInput(entry) !== null);
+
+    for (const entry of nextEntries) {
+      const input = getMarkerMotionInput(entry);
+      if (!input) continue;
+      const identity = getMarkerIdentity(entry);
+      visibleMarkerIds.add(identity);
+      const previous = animations.get(identity);
+      animations.set(identity, {
+        input,
+        plan: retargetMarkerMotion(previous ?? null, input, geometry.lapLength, now),
+        startedAt: now,
+      });
+    }
+
+    for (const identity of animations.keys()) {
+      if (!visibleMarkerIds.has(identity)) animations.delete(identity);
+    }
+
+    const renderMarker = (identity: string, state: MarkerAnimationState, timestamp: number) => {
+      const element = markerElementsRef.current.get(identity);
+      if (!element) return;
+      const point = interpolateGeometryPoint(
+        geometry,
+        getAnimatedLapDistance(state.plan, timestamp - state.startedAt),
+      );
+      if (!point) return;
+      element.setAttribute("transform", `translate(${point.x} ${point.y})`);
+      element.dataset.markerMotion = state.plan.mode;
+    };
+
+    const animate = (timestamp: number) => {
+      if (cancelled) return;
+      for (const [identity, state] of animations) renderMarker(identity, state, timestamp);
+      const hasActiveAnimation = [...animations.values()].some(
+        (state) => state.plan.durationMs > 0 && timestamp - state.startedAt < state.plan.durationMs,
+      );
+      frameId = hasActiveAnimation ? requestAnimationFrame(animate) : null;
+    };
+    animate(now);
+
+    return () => {
+      cancelled = true;
+      if (frameId !== null) cancelAnimationFrame(frameId);
+    };
+  }, [geometry, sessionKey, standings]);
 
   useEffect(() => {
     let cancelled = false;
@@ -494,7 +721,7 @@ export function LiveTimingTrackLine({
                 Progression Live
               </p>
               <h2 className="mt-1 text-2xl font-black text-white">
-                Position des voitures sur le tour
+                Positions en piste
               </h2>
             </div>
           </div>
@@ -526,6 +753,36 @@ export function LiveTimingTrackLine({
                   aria-label={`Tracé AIW du layout ${geometry.technicalId}`}
                   preserveAspectRatio="xMidYMid meet"
                 >
+                  {yellowSectors.map((sector) => {
+                    const anchor = getSectorAnchor(geometry, sector);
+                    if (!anchor) return null;
+                    const displayRotation = fittedGeometry?.transform === "rotate(90)" ? 90 : 0;
+                    const displayAnchor = rotateDisplayPoint(anchor, displayRotation);
+                    const badgePlacement = fittedGeometry
+                      ? getSectorBadgePlacement(
+                        fittedGeometry,
+                        yellowSectors.indexOf(sector),
+                        yellowSectors.length,
+                      )
+                      : null;
+                    if (!badgePlacement) return null;
+                    return (
+                      <line
+                        key={`sector-flag-leader-${sector}`}
+                        data-sector-flag-leader="true"
+                        x1={displayAnchor.x}
+                        y1={displayAnchor.y}
+                        x2={badgePlacement.x}
+                        y2={badgePlacement.y + SECTOR_BADGE_HEIGHT / 2}
+                        stroke="#facc15"
+                        strokeOpacity="0.9"
+                        strokeDasharray="4 4"
+                        strokeLinecap="round"
+                        strokeWidth="2"
+                        vectorEffect="non-scaling-stroke"
+                      />
+                    );
+                  })}
                   <g transform={fittedGeometry?.transform}>
                   <path
                     d={`${trackPath} Z`}
@@ -536,6 +793,23 @@ export function LiveTimingTrackLine({
                     strokeWidth="18"
                     vectorEffect="non-scaling-stroke"
                   />
+                  {yellowSectors.map((sector) => {
+                    const sectorPath = getSectorPath(geometry, sector);
+                    return sectorPath ? (
+                      <path
+                        key={`sector-flag-track-${sector}`}
+                        data-sector-flag-track="true"
+                        d={sectorPath}
+                        fill="none"
+                        stroke="#facc15"
+                        strokeOpacity="0.9"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth="22"
+                        vectorEffect="non-scaling-stroke"
+                      />
+                    ) : null;
+                  })}
                   {startFinishLine ? (
                     <line
                       data-start-finish-line="true"
@@ -567,15 +841,18 @@ export function LiveTimingTrackLine({
                   {geometryMarkers.map(({ entry, point }) => {
                     const marker = String(entry.position);
                     const carNumber = entry.carNumber?.trim();
-                    const markerFill = entry.underYellow === true
-                      ? "#facc15"
-                      : entry.inPit ? "#06b6d4" : "#f97316";
-                    const markerStroke = entry.underYellow === true
-                      ? "#fef08a"
-                      : entry.inPit ? "#a5f3fc" : "#fed7aa";
+                    const markerPalette = getMarkerPalette(entry.carClass, entry.inPit === true);
+                    const identity = getMarkerIdentity(entry);
                     return (
                       <g
-                        key={`${entry.position}-${entry.driverName}`}
+                        key={identity}
+                        ref={(element) => {
+                          if (element) markerElementsRef.current.set(identity, element);
+                          else markerElementsRef.current.delete(identity);
+                        }}
+                        data-marker-motion="initial"
+                        data-marker-animation-duration={VISUAL_MARKER_ANIMATION_DURATION_MS}
+                        data-marker-animation-max-distance={MAX_MARKER_ANIMATION_DISTANCE}
                         transform={`translate(${point.x} ${point.y})`}
                         aria-label={`Position ${marker} — ${entry.driverName}`}
                       >
@@ -586,8 +863,8 @@ export function LiveTimingTrackLine({
                         >
                           <circle
                             r={MARKER_LABEL_RADIUS}
-                            fill={markerFill}
-                            stroke={markerStroke}
+                            fill={markerPalette.fill}
+                            stroke={markerPalette.stroke}
                             strokeWidth={MARKER_LABEL_STROKE_WIDTH}
                           />
                           <text
@@ -606,60 +883,44 @@ export function LiveTimingTrackLine({
                     );
                   })}
                   </g>
-                  {yellowFlagLabels.length > 0 && displayViewBox ? (
-                    <g
-                      data-sector-flag-overlay="true"
-                      aria-label={`Drapeau jaune ${yellowFlagLabels.join(", ")}`}
-                      pointerEvents="none"
-                    >
-                      {yellowFlagLabels.map((label, index) => {
-                        const width = label === "JAUNE" ? 64 : 42;
-                        const gap = 8;
-                        const totalWidth = yellowFlagLabels.reduce(
-                          (total, current, currentIndex) => total
-                            + (currentIndex > 0 ? gap : 0)
-                            + (current === "JAUNE" ? 64 : 42),
-                          0,
-                        );
-                        const offset = yellowFlagLabels
-                          .slice(0, index)
-                          .reduce((total, current) => total + (current === "JAUNE" ? 64 : 42) + gap, 0);
-                        const x = displayViewBox.x
-                          + (displayViewBox.width - totalWidth) / 2
-                          + offset;
-                        const y = displayViewBox.y + displayViewBox.height / 2 - 14;
-                        return (
-                          <g
-                            key={label}
-                            data-sector-flag-marker={label}
-                            aria-label={`Drapeau jaune ${label}`}
-                            transform={`translate(${x} ${y})`}
-                          >
-                            <rect
-                              width={width}
-                              height="28"
-                              rx="14"
-                              fill="#facc15"
-                              fillOpacity="0.96"
-                              stroke="#fef08a"
-                              strokeWidth="2"
-                            />
-                            <text
-                              x={width / 2}
-                              y="14"
-                              dominantBaseline="middle"
-                              textAnchor="middle"
-                              fill="#422006"
-                              fontSize="11"
-                              fontWeight="900"
-                            >
-                              {label}
-                            </text>
-                          </g>
-                        );
-                      })}
-                    </g>
-                  ) : null}
+                  {yellowSectors.map((sector, index) => {
+                    const badgePlacement = fittedGeometry
+                      ? getSectorBadgePlacement(fittedGeometry, index, yellowSectors.length)
+                      : null;
+                    if (!badgePlacement) return null;
+                    return (
+                      <g
+                        key={`sector-flag-badge-${sector}`}
+                        data-sector-flag-badge="true"
+                        className="pointer-events-none"
+                        transform={`translate(${badgePlacement.x} ${badgePlacement.y})`}
+                      >
+                        <rect
+                          x={-SECTOR_BADGE_WIDTH / 2}
+                          y={-SECTOR_BADGE_HEIGHT / 2}
+                          width={SECTOR_BADGE_WIDTH}
+                          height={SECTOR_BADGE_HEIGHT}
+                          rx="8"
+                          fill="#713f12"
+                          fillOpacity="0.96"
+                          stroke="#facc15"
+                          strokeWidth="2"
+                          vectorEffect="non-scaling-stroke"
+                        />
+                        <text
+                          x="0"
+                          y="1"
+                          dominantBaseline="middle"
+                          textAnchor="middle"
+                          fill="#fef08a"
+                          fontSize="11"
+                          fontWeight="900"
+                        >
+                          ⚠ S{sector}
+                        </text>
+                      </g>
+                    );
+                  })}
                 </svg>
               </div>
             ) : (
@@ -680,6 +941,14 @@ export function LiveTimingTrackLine({
                 Tracé AIW : {geometry ? geometry.technicalId : "indisponible"}
               </span>
             </div>
+            {yellowFlagNotice ? (
+              <p
+                data-sector-flag-notice="true"
+                className="mt-3 rounded-lg border border-yellow-300/30 bg-yellow-300/10 px-3 py-2 text-xs text-yellow-100"
+              >
+                {yellowFlagNotice}
+              </p>
+            ) : null}
           </div>
         )}
       </div>

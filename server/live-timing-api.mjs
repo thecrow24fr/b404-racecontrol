@@ -1,7 +1,9 @@
 import http from "node:http";
 import { execFile } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { createTrackGeometryProvider } from "./track-geometry.mjs";
+import { createTyreHistoryStore } from "./live-tyre-history.mjs";
 
 const DEFAULT_TIMEOUT_MS = 5000;
 const DEFAULT_MANAGER_BASE_URL = "http://127.0.0.1:4000";
@@ -10,6 +12,8 @@ const WEATHER_CLIENT_IMAGE = "rf2WeatherClient.exe";
 const WEATHER_CLIENT_VM_SUFFIX = "_vm";
 const INT32_MAX = 2147483647;
 const STREAM_INTERVAL_MS = 500;
+const RF2_SHARED_MEMORY_READER_PATH = fileURLToPath(new URL("./rf2-shared-memory-reader.py", import.meta.url));
+const RF2_SHARED_MEMORY_TIMEOUT_MS = 1500;
 const execFileAsync = promisify(execFile);
 
 /**
@@ -261,6 +265,42 @@ function mapStatus(vehicle) {
   return "running";
 }
 
+/**
+ * rFactor 2 exposes lastSectorTime1 and lastSectorTime2 as cumulative lap
+ * endpoints. Convert those endpoints to individual sector durations only when
+ * the completed-lap bounds are coherent; otherwise keep the affected value
+ * unavailable instead of displaying a negative or cumulative duration.
+ */
+function deriveLastSectorTimes(vehicle) {
+  const lastLapTime = finiteNumber(vehicle.lastLapTime);
+  const sector1End = finiteNumber(vehicle.lastSectorTime1);
+  const sector2End = finiteNumber(vehicle.lastSectorTime2);
+  const lapsCompleted = finiteNumber(vehicle.lapsCompleted);
+  const hasLastLap = lastLapTime !== null && lastLapTime > 0;
+  const hasCompletedLap = hasLastLap && lapsCompleted !== null && lapsCompleted >= 1;
+  const hasUsableSector1End = sector1End !== null && sector1End > 0;
+  const sector1 = hasLastLap && hasUsableSector1End && sector1End < lastLapTime
+    ? sector1End
+    : null;
+  const hasCoherentSector2 =
+    sector1 !== null
+    && sector2End !== null
+    && sector2End > sector1
+    && sector2End < lastLapTime;
+  const sector2 = hasCoherentSector2 ? sector2End - sector1 : null;
+  const hasCoherentSector2End =
+    sector2End !== null
+    && sector2End > 0
+    && hasLastLap
+    && sector2End < lastLapTime
+    && (!hasUsableSector1End || sector2End > sector1End);
+  const sector3 = hasCompletedLap && hasCoherentSector2End
+    ? lastLapTime - sector2End
+    : null;
+
+  return { sector1, sector2, sector3 };
+}
+
 function mapWeather(session) {
   const rain = finiteNumber(session.raining);
   const clouds = finiteNumber(session.darkCloud);
@@ -459,6 +499,52 @@ function buildRecords(history, fallbackSession) {
       };
 }
 
+function activeHistoryTiming(history, vehicle) {
+  if (!history || typeof history !== "object" || Array.isArray(history)) return null;
+  const slotId = finiteNumber(vehicle?.slotID);
+  if (slotId === null || !Number.isInteger(slotId)) return null;
+  const series = history[String(Math.trunc(slotId))];
+  if (!Array.isArray(series)) return null;
+
+  const completed = series
+    .filter((lap) => lap && typeof lap === "object")
+    .filter((lap) => finiteNumber(lap.slotID) === Math.trunc(slotId))
+    .map((lap) => ({ lap, seconds: finiteNumber(lap.lapTime) }))
+    .filter(({ seconds }) => seconds !== null && seconds > 0);
+  if (completed.length === 0) return null;
+
+  const latest = completed.at(-1);
+  const best = completed.reduce((fastest, candidate) =>
+    candidate.seconds < fastest.seconds ? candidate : fastest,
+  );
+  return {
+    bestLapTime: best.seconds,
+    lastLapTime: latest.seconds,
+    lastSectorTime1: finiteNumber(latest.lap.sectorTime1),
+    lastSectorTime2: finiteNumber(latest.lap.sectorTime2),
+  };
+}
+
+function enrichActiveVehiclesWithHistory(vehicles, history) {
+  return vehicles.map((vehicle) => {
+    if (!vehicle || typeof vehicle !== "object") return vehicle;
+    const timing = activeHistoryTiming(history, vehicle);
+    if (!timing) return vehicle;
+    const nativeLastLap = finiteNumber(vehicle.lastLapTime);
+    const primaryLastLapIsValid = nativeLastLap !== null && nativeLastLap > 0;
+    const nativeBestLap = finiteNumber(vehicle.bestLapTime);
+    return {
+      ...vehicle,
+      bestLapTime: nativeBestLap !== null && nativeBestLap > 0 ? nativeBestLap : timing.bestLapTime,
+      ...(primaryLastLapIsValid ? {} : {
+        lastLapTime: timing.lastLapTime,
+        lastSectorTime1: timing.lastSectorTime1,
+        lastSectorTime2: timing.lastSectorTime2,
+      }),
+    };
+  });
+}
+
 function publicParticipantId(vehicle) {
   const slotId = finiteNumber(vehicle?.slotID);
   const driverName = publicText(vehicle?.driverName, "Pilote");
@@ -475,7 +561,321 @@ function publicParticipantId(vehicle) {
   return `p${(hash >>> 0).toString(36).padStart(7, "0")}`;
 }
 
-function buildStandings(vehicles, trackDistance) {
+function nativeVelocityMetersPerSecond(vehicle) {
+  // /rest/watch/standings fournit la magnitude native carVelocity.velocity.
+  // Le vecteur rFactor 2 Velocity est documenté en mètres par seconde.
+  const velocity = finiteNumber(vehicle?.carVelocity?.velocity);
+  return velocity !== null && velocity >= 0 ? velocity : null;
+}
+
+function vmaxSessionState(cache, sourceId, sessionCode) {
+  const current = cache.get(sourceId);
+  if (current?.sessionCode === sessionCode) return current;
+  const next = { sessionCode, maxSpeedMsByParticipantId: new Map() };
+  cache.set(sourceId, next);
+  return next;
+}
+
+function rememberSessionVmax(state, vehicles) {
+  for (const vehicle of vehicles) {
+    const velocity = nativeVelocityMetersPerSecond(vehicle);
+    if (velocity === null) continue;
+    const participantId = publicParticipantId(vehicle);
+    const current = state.maxSpeedMsByParticipantId.get(participantId);
+    if (current === undefined || velocity > current) {
+      state.maxSpeedMsByParticipantId.set(participantId, velocity);
+    }
+  }
+  return state.maxSpeedMsByParticipantId;
+}
+
+function nativeFuelFraction(vehicle) {
+  const fraction = finiteNumber(vehicle?.fuelFraction);
+  return fraction !== null && fraction >= 0 && fraction <= 1 ? fraction : null;
+}
+
+function normalizedIdentity(value) {
+  return publicText(value).normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim().toLocaleLowerCase("fr");
+}
+
+function sameIdentity(left, right) {
+  const normalizedLeft = normalizedIdentity(left);
+  const normalizedRight = normalizedIdentity(right);
+  return normalizedLeft.length > 0 && normalizedLeft === normalizedRight;
+}
+
+function nativeFiniteNumber(value) {
+  if (value === null || value === undefined || value === "") return null;
+  return finiteNumber(value);
+}
+
+function validNativeFuel(value) {
+  const number = nativeFiniteNumber(value);
+  return number !== null && number >= 0 ? number : null;
+}
+
+function validNativeWearPercent(value) {
+  const fraction = nativeFiniteNumber(value);
+  if (fraction === null || fraction < 0 || fraction > 1) return null;
+  return Math.round(fraction * 1000) / 10;
+}
+
+function unavailableNativeVehicleMeasurements() {
+  return {
+    fuelLiters: null,
+    fuelCapacityLiters: null,
+    fuelFraction: null,
+    frontTyreCompound: null,
+    rearTyreCompound: null,
+    wearFrontLeft: null,
+    wearFrontRight: null,
+    wearRearLeft: null,
+    wearRearRight: null,
+  };
+}
+
+/**
+ * Enriches only existing Watch standings vehicles. A measure is accepted only
+ * after an exact native slot and independent Scoring identity match.
+ */
+export function enrichActiveVehiclesWithSharedMemory(vehicles, snapshot) {
+  const unavailable = unavailableNativeVehicleMeasurements();
+  if (!snapshot?.stable || !Array.isArray(snapshot.vehicles)) {
+    return vehicles.map((vehicle) => ({ ...vehicle, sharedMemoryTelemetryExpected: true, ...unavailable }));
+  }
+
+  const bySlot = new Map();
+  const duplicateSlots = new Set();
+  for (const measurement of snapshot.vehicles) {
+    const slotID = finiteNumber(measurement?.slotID);
+    if (slotID === null || !Number.isInteger(slotID)) continue;
+    const slot = Math.trunc(slotID);
+    if (bySlot.has(slot)) duplicateSlots.add(slot);
+    else bySlot.set(slot, measurement);
+  }
+
+  return vehicles.map((vehicle) => {
+    const slotID = finiteNumber(vehicle?.slotID);
+    if (slotID === null || !Number.isInteger(slotID)) {
+      return { ...vehicle, sharedMemoryTelemetryExpected: true, ...unavailable };
+    }
+    const measurement = bySlot.get(Math.trunc(slotID));
+    if (
+      !measurement ||
+      duplicateSlots.has(Math.trunc(slotID)) ||
+      !sameIdentity(vehicle.driverName, measurement.driverName) ||
+      !sameIdentity(vehicle.vehicleName, measurement.vehicleName) ||
+      !sameIdentity(vehicle.carClass, measurement.carClass) ||
+      (typeof vehicle.player === "boolean" && typeof measurement.player === "boolean" && vehicle.player !== measurement.player)
+    ) {
+      return { ...vehicle, sharedMemoryTelemetryExpected: true, ...unavailable };
+    }
+
+    const fuelLiters = validNativeFuel(measurement.fuelLiters);
+    const fuelCapacityLiters = validNativeFuel(measurement.fuelCapacityLiters);
+    const fuelFraction =
+      fuelLiters !== null && fuelCapacityLiters !== null && fuelCapacityLiters > 0 && fuelLiters <= fuelCapacityLiters
+        ? fuelLiters / fuelCapacityLiters
+        : null;
+    const wear = Array.isArray(measurement.wheelWearFractions) && measurement.wheelWearFractions.length === 4
+      ? measurement.wheelWearFractions.map(validNativeWearPercent)
+      : [null, null, null, null];
+
+    const control = finiteNumber(measurement.control);
+    const nativeDriverType = control === 1
+      ? "ai"
+      : control === 0 || control === 2
+        ? "human"
+        : null;
+    return {
+      ...vehicle,
+      ...(nativeDriverType === null ? {} : { driverType: nativeDriverType }),
+      sharedMemoryTelemetryExpected: true,
+      fuelLiters,
+      fuelCapacityLiters,
+      fuelFraction,
+      frontTyreCompound: publicText(measurement.frontTyreCompound) || null,
+      rearTyreCompound: publicText(measurement.rearTyreCompound) || null,
+      wearFrontLeft: wear[0],
+      wearFrontRight: wear[1],
+      wearRearLeft: wear[2],
+      wearRearRight: wear[3],
+    };
+  });
+}
+
+function sharedMemoryFallbackStandings(snapshot, expectedVehicleCount) {
+  const expected = finiteNumber(expectedVehicleCount);
+  if (
+    snapshot?.stable !== true ||
+    !Number.isInteger(expected) ||
+    expected < 1 ||
+    snapshot.scoringVehicleCount !== expected ||
+    snapshot.telemetryVehicleCount !== expected ||
+    snapshot.matchedVehicleCount !== expected ||
+    !Array.isArray(snapshot.vehicles) ||
+    snapshot.vehicles.length !== expected
+  ) return null;
+
+  const slots = new Set();
+  const positions = new Set();
+  const verified = [];
+  for (const vehicle of snapshot.vehicles) {
+    const slotID = finiteNumber(vehicle?.slotID);
+    const mID = finiteNumber(vehicle?.mID);
+    const position = finiteNumber(vehicle?.position);
+    const control = finiteNumber(vehicle?.control);
+    const driverName = publicText(vehicle?.driverName);
+    const vehicleName = publicText(vehicle?.vehicleName);
+    const carClass = publicText(vehicle?.carClass);
+    if (
+      slotID === null || !Number.isInteger(slotID) ||
+      mID === null || !Number.isInteger(mID) || mID !== slotID ||
+      position === null || !Number.isInteger(position) || position < 1 ||
+      control === null || ![0, 1, 2].includes(control) ||
+      !driverName || !vehicleName || !carClass ||
+      slots.has(slotID) || positions.has(position)
+    ) return null;
+    slots.add(slotID);
+    positions.add(position);
+    // InternalsPlugin.hpp: mControl 0=local player, 1=AI, 2=remote human.
+    const driverType = control === 1 ? "ai" : "human";
+    const wear = Array.isArray(vehicle.wheelWearFractions) && vehicle.wheelWearFractions.length === 4
+      ? vehicle.wheelWearFractions.map(validNativeWearPercent)
+      : [null, null, null, null];
+    const fuelLiters = validNativeFuel(vehicle.fuelLiters);
+    const fuelCapacityLiters = validNativeFuel(vehicle.fuelCapacityLiters);
+    verified.push({
+      ...vehicle,
+      slotID,
+      driverName,
+      vehicleName,
+      carClass,
+      position,
+      driverType,
+      sharedMemoryTelemetryExpected: true,
+      fuelFraction: fuelLiters !== null && fuelCapacityLiters !== null && fuelCapacityLiters > 0 && fuelLiters <= fuelCapacityLiters
+        ? fuelLiters / fuelCapacityLiters
+        : null,
+      frontTyreCompound: publicText(vehicle.frontTyreCompound) || null,
+      rearTyreCompound: publicText(vehicle.rearTyreCompound) || null,
+      wearFrontLeft: wear[0],
+      wearFrontRight: wear[1],
+      wearRearLeft: wear[2],
+      wearRearRight: wear[3],
+    });
+  }
+  return verified.length > 0
+    ? verified.sort((a, b) => a.position - b.position)
+    : null;
+}
+
+function sharedMemoryFallbackIssue(snapshot, expectedVehicleCount) {
+  if (!snapshot || typeof snapshot !== "object") {
+    return "Lecture Shared Memory désactivée ou indisponible; aucun classement publié.";
+  }
+  if (snapshot.stable !== true) {
+    return "Trame Shared Memory indisponible ou instable; aucun classement publié.";
+  }
+  const expected = finiteNumber(expectedVehicleCount);
+  if (!Number.isInteger(expected) || expected < 1) {
+    return "Nombre de véhicules attendu par Watch indisponible; aucun classement publié.";
+  }
+  const counts = [snapshot.scoringVehicleCount, snapshot.telemetryVehicleCount, snapshot.matchedVehicleCount];
+  if (counts.some((count) => finiteNumber(count) !== expected)) {
+    return `Comptages incohérents : Watch ${expected}, Scoring ${counts[0] ?? "N/D"}, Telemetry ${counts[1] ?? "N/D"}, correspondances ${counts[2] ?? "N/D"}; aucun classement publié.`;
+  }
+  if (!Array.isArray(snapshot.vehicles) || snapshot.vehicles.length !== expected) {
+    return `Roster Shared Memory incomplet : ${Array.isArray(snapshot.vehicles) ? snapshot.vehicles.length : "liste absente"}/${expected}; aucun classement publié.`;
+  }
+  const slots = new Set();
+  const positions = new Set();
+  for (const vehicle of snapshot.vehicles) {
+    const slotID = finiteNumber(vehicle?.slotID);
+    const mID = finiteNumber(vehicle?.mID);
+    const position = finiteNumber(vehicle?.position);
+    const control = finiteNumber(vehicle?.control);
+    if (slotID === null || !Number.isInteger(slotID) || mID === null || !Number.isInteger(mID) || mID !== slotID) {
+      return "Association native slotID/mID non vérifiée; aucune ligne affichée.";
+    }
+    if (position === null || !Number.isInteger(position) || position < 1) {
+      return "Position native absente ou invalide; aucune ligne affichée.";
+    }
+    if (control === null || ![0, 1, 2].includes(control)) {
+      return "Type de participant inconnu (mControl absent/invalide); aucune ligne affichée.";
+    }
+    if (!publicText(vehicle?.driverName) || !publicText(vehicle?.vehicleName) || !publicText(vehicle?.carClass)) {
+      return "Identité Scoring incomplète (pilote, voiture ou classe); aucune ligne affichée.";
+    }
+    if (slots.has(slotID)) return "slotID dupliqué; associations non vérifiées, aucune ligne affichée.";
+    if (positions.has(position)) return "Positions natives dupliquées; classement non vérifié, aucune ligne affichée.";
+    slots.add(slotID);
+    positions.add(position);
+  }
+  return "Snapshot Shared Memory refusé pour une raison non classifiée; aucun classement publié.";
+}
+
+async function defaultSharedMemoryReader() {
+  if (process.platform !== "win32") return { stable: false, vehicles: [] };
+  try {
+    const { stdout } = await execFileAsync(
+      "python",
+      [RF2_SHARED_MEMORY_READER_PATH],
+      { timeout: RF2_SHARED_MEMORY_TIMEOUT_MS, windowsHide: true, maxBuffer: 256 * 1024 },
+    );
+    const payload = JSON.parse(stdout);
+    return payload && typeof payload === "object" ? payload : { stable: false, vehicles: [] };
+  } catch {
+    return { stable: false, vehicles: [] };
+  }
+}
+
+async function readSharedMemory(options) {
+  const reader = typeof options.sharedMemoryReader === "function"
+    ? options.sharedMemoryReader
+    : options.enableNativeSharedMemory === true
+      ? defaultSharedMemoryReader
+      : null;
+  if (!reader) return null;
+  try {
+    const snapshot = await reader();
+    return snapshot && typeof snapshot === "object" ? snapshot : { stable: false, vehicles: [] };
+  } catch {
+    return { stable: false, vehicles: [] };
+  }
+}
+
+function nativeVehicleMeasurements(vehicle) {
+  if (vehicle?.sharedMemoryTelemetryExpected === true) {
+    return {
+      fuelLiters: validNativeFuel(vehicle.fuelLiters),
+      fuelCapacityLiters: validNativeFuel(vehicle.fuelCapacityLiters),
+      fuelFraction: (() => {
+        const fraction = nativeFiniteNumber(vehicle.fuelFraction);
+        return fraction !== null && fraction >= 0 && fraction <= 1 ? fraction : null;
+      })(),
+      frontTyreCompound: publicText(vehicle.frontTyreCompound) || null,
+      rearTyreCompound: publicText(vehicle.rearTyreCompound) || null,
+      wearFrontLeft: nativeFiniteNumber(vehicle.wearFrontLeft),
+      wearFrontRight: nativeFiniteNumber(vehicle.wearFrontRight),
+      wearRearLeft: nativeFiniteNumber(vehicle.wearRearLeft),
+      wearRearRight: nativeFiniteNumber(vehicle.wearRearRight),
+    };
+  }
+  return {
+    fuelLiters: null,
+    fuelCapacityLiters: null,
+    fuelFraction: nativeFuelFraction(vehicle),
+    frontTyreCompound: null,
+    rearTyreCompound: null,
+    wearFrontLeft: null,
+    wearFrontRight: null,
+    wearRearLeft: null,
+    wearRearRight: null,
+  };
+}
+
+function buildStandings(vehicles, trackDistance, maxSpeedMsByParticipantId = null, tyreHistoryStore = null, tyreHistorySessionKey = null, sessionSeconds = null) {
   const valid = vehicles
     .filter((vehicle) => vehicle && typeof vehicle === "object")
     .filter((vehicle) => publicText(vehicle.driverName) && (finiteNumber(vehicle.position) ?? 0) > 0)
@@ -488,23 +888,34 @@ function buildStandings(vehicles, trackDistance) {
 
   const mapped = valid.map((vehicle) => {
     const position = finiteNumber(vehicle.position) ?? 0;
-    const qualification = finiteNumber(vehicle.qualification) ?? position;
+    const qualification = finiteNumber(vehicle.qualification);
     const lapDistance = finiteNumber(vehicle.lapDistance);
     const lapProgress =
       trackDistance !== null && trackDistance > 0 && lapDistance !== null
         ? Math.max(0, Math.min(1, lapDistance / trackDistance))
         : null;
-    const startingPosition = qualification > 0 ? qualification : position;
+    const startingPosition = qualification !== null && qualification > 0
+      ? qualification
+      : null;
+    const lastSectorTimes = deriveLastSectorTimes(vehicle);
+    const participantId = publicParticipantId(vehicle);
+    const vehicleMeasurements = nativeVehicleMeasurements(vehicle);
+    const maxSpeedMs = maxSpeedMsByParticipantId?.get(participantId);
+    const maxSpeedKmh =
+      typeof maxSpeedMs === "number" && Number.isFinite(maxSpeedMs) && maxSpeedMs >= 0
+        ? maxSpeedMs * 3.6
+        : null;
     return {
       position,
-      participantId: publicParticipantId(vehicle),
+      participantId,
       startingPosition,
-      prevPosition: startingPosition,
+      prevPosition: startingPosition ?? position,
       driverName: publicText(vehicle.driverName, "Pilote"),
+      driverType: vehicle.driverType === "ai" ? "ai" : vehicle.driverType === "human" ? "human" : undefined,
       team: publicText(vehicle.fullTeamName, ""),
       car: publicText(vehicle.vehicleName, "Inconnue"),
       carNumber: publicText(vehicle.carNumber, ""),
-      carClass: publicText(vehicle.carClass, "Inconnue"),
+      carClass: publicText(vehicle.carClass, "") || null,
       laps: finiteNumber(vehicle.lapsCompleted) ?? 0,
       gapToLeader: formatGap(
         vehicle.timeBehindLeader,
@@ -520,9 +931,10 @@ function buildStandings(vehicles, trackDistance) {
       nextParticipantId: null,
       bestLap: formatLapTime(vehicle.bestLapTime),
       lastLap: formatLapTime(vehicle.lastLapTime),
-      sector1: formatLapTime(vehicle.bestSectorTime1),
-      sector2: formatLapTime(vehicle.bestSectorTime2),
-      sector3: null,
+      maxSpeedKmh,
+      sector1: formatLapTime(lastSectorTimes.sector1),
+      sector2: formatLapTime(lastSectorTimes.sector2),
+      sector3: lastSectorTimes.sector3 === null ? null : formatLapTime(lastSectorTimes.sector3),
       inPit: vehicle.pitting === true || vehicle.pitState === "STOPPED",
       underYellow:
         typeof vehicle.underYellow === "boolean"
@@ -533,7 +945,8 @@ function buildStandings(vehicles, trackDistance) {
       status: mapStatus(vehicle),
       pitStops: finiteNumber(vehicle.pitstops) ?? 0,
       isPole: (finiteNumber(vehicle.bestLapTime) ?? -1) === bestLap,
-      fuelFraction: finiteNumber(vehicle.fuelFraction),
+      ...vehicleMeasurements,
+      tyreHistory: null,
       lapDistance,
       lapProgress,
       penalties: finiteNumber(vehicle.penalties) ?? 0,
@@ -543,10 +956,31 @@ function buildStandings(vehicles, trackDistance) {
   const participantIdByPosition = new Map(
     mapped.map((entry) => [entry.position, entry.participantId]),
   );
-  return mapped.map((entry) => ({
-    ...entry,
-    nextParticipantId: participantIdByPosition.get(entry.position - 1) ?? null,
-  }));
+  return mapped.map((entry) => {
+    if (tyreHistoryStore && tyreHistorySessionKey && entry.participantId && entry.frontTyreCompound !== null && entry.rearTyreCompound !== null) {
+      tyreHistoryStore.record(tyreHistorySessionKey, {
+        participantId: entry.participantId,
+        driverName: entry.driverName,
+        lap: entry.laps,
+        sessionSeconds,
+        lapTime: entry.lastLap,
+        frontTyreCompound: entry.frontTyreCompound,
+        rearTyreCompound: entry.rearTyreCompound,
+        wearFrontLeft: entry.wearFrontLeft,
+        wearFrontRight: entry.wearFrontRight,
+        wearRearLeft: entry.wearRearLeft,
+        wearRearRight: entry.wearRearRight,
+        inPit: entry.inPit,
+      });
+    }
+    return {
+      ...entry,
+      tyreHistory: tyreHistoryStore && tyreHistorySessionKey && entry.participantId
+        ? tyreHistoryStore.history(tyreHistorySessionKey, entry.participantId)
+        : [],
+      nextParticipantId: participantIdByPosition.get(entry.position - 1) ?? null,
+    };
+  });
 }
 
 function selectionTrackName(selection) {
@@ -566,10 +1000,24 @@ function buildData(
   weatherClientStatus,
   canonicalTrackLength,
   trackTechnicalId,
+  serverStatus = "online",
+  standingsAvailable = true,
+  standingsSource = "standings",
+  maxSpeedMsByParticipantId = null,
+  tyreHistoryStore = null,
+  standingsUnavailableReason = null,
 ) {
   const sessionCode = publicText(session.session, "—");
   const trackDistance = finiteNumber(session.lapDistance);
-  const standings = buildStandings(vehicles, trackDistance);
+  const sessionSeconds = finiteNumber(session.currentEventTime);
+  const standings = buildStandings(
+    vehicles,
+    trackDistance,
+    maxSpeedMsByParticipantId,
+    tyreHistoryStore,
+    `${sourceId}:${sessionCode}`,
+    sessionSeconds,
+  );
   const maxLaps = finiteNumber(session.maximumLaps);
   const currentEventTime = finiteNumber(session.currentEventTime);
   const endEventTime = finiteNumber(session.endEventTime);
@@ -598,20 +1046,24 @@ function buildData(
       circuit: publicText(session.trackName) || selectionTrackName(selection) || "Inconnu",
       category,
       weather: mapWeather(session),
-      driversCount: standings.length,
+      driversCount: standingsAvailable ? standings.length : null,
       maxDrivers: finiteNumber(session.maxPlayers),
       currentSession: sessionLabel(sessionCode),
       timeRemaining:
         sessionTimeRemaining === null ? "—" : formatRFactorDuration(sessionTimeRemaining),
       totalSessionTime:
         endEventTime === null ? "—" : formatRFactorDuration(Math.max(0, endEventTime)),
-      lapsCompleted: standings.reduce((max, entry) => Math.max(max, entry.laps), 0),
+      lapsCompleted: standingsAvailable
+        ? standings.reduce((max, entry) => Math.max(max, entry.laps), 0)
+        : null,
       totalLaps: maxLaps === INT32_MAX ? null : maxLaps,
       trackLength: canonicalTrackLength?.meters ?? null,
       trackLengthSource: canonicalTrackLength?.source ?? null,
       trackTechnicalId: trackTechnicalId ?? canonicalTrackLength?.technicalId ?? null,
       lapDistance: trackDistance,
-      status: "online",
+      status: serverStatus,
+      standingsSource,
+      standingsUnavailableReason: publicText(standingsUnavailableReason) || null,
     },
     session: {
       phase: sessionPhase(sessionCode),
@@ -650,11 +1102,134 @@ async function requestJson(url, { fetchImpl, timeoutMs }) {
     } catch {
       return { ok: false, status: response.status, parseError: true };
     }
-  } catch {
-    return { ok: false, status: 0 };
+  } catch (error) {
+    const isTimeout = controller.signal.aborted || error?.name === "AbortError";
+    return { ok: false, status: 0, failure: isTimeout ? "timeout" : "transport" };
   } finally {
     clearTimeout(timer);
   }
+}
+
+/** Internal-only standings diagnosis. Never include an upstream body or identity. */
+function classifyStandingsFailure(result) {
+  if (result?.ok && !Array.isArray(result.body)) return "unexpected_shape";
+  if (result?.ok && Array.isArray(result.body) && result.body.length === 0) return "empty_standings";
+  if (result?.parseError) return "invalid_json";
+  if (result?.failure === "timeout") return "timeout";
+  if (result?.failure === "transport") return "transport";
+  const status = finiteNumber(result?.status);
+  return status !== null && status > 0 ? `http_${Math.trunc(status)}` : "transport";
+}
+
+function r2laSession(payload) {
+  const scoring = payload?.mScoringInfo;
+  if (!scoring || typeof scoring !== "object" || Array.isArray(scoring)) return null;
+  return {
+    serverName: scoring.mServerName,
+    trackName: scoring.mTrackName,
+    session: typeof scoring.mSession === "string" ? scoring.mSession : "—",
+    currentEventTime: scoring.mCurrentET,
+    endEventTime: scoring.mEndET,
+    maximumLaps: scoring.mMaxLaps,
+    lapDistance: scoring.mLapDist,
+    ambientTemp: scoring.mAmbientTemp,
+    trackTemp: scoring.mTrackTemp,
+    raining: scoring.mRaining,
+    yellowFlagState: scoring.mYellowFlagState,
+    sectorFlag: scoring.mSectorFlag,
+  };
+}
+
+function r2laVehicles(payload) {
+  if (!Array.isArray(payload?.mVehicles)) return null;
+  return payload.mVehicles
+    .filter((vehicle) => vehicle && typeof vehicle === "object")
+    .map((vehicle) => ({
+      slotID: vehicle.mID,
+      driverName: vehicle.mDriverName,
+      vehicleName: vehicle.mVehicleName,
+      fullTeamName: vehicle.mTeamName,
+      carNumber: vehicle.mCarNumber,
+      carClass: vehicle.mVehicleClass,
+      position: vehicle.mPlace,
+      lapsCompleted: vehicle.mTotalLaps,
+      bestLapTime: vehicle.mBestLapTime,
+      lastLapTime: vehicle.mLastLapTime,
+      timeBehindLeader: vehicle.mTimeBehindLeader,
+      timeBehindNext: vehicle.mTimeBehindNext,
+      lapsBehindLeader: vehicle.mLapsBehindLeader,
+      pitstops: vehicle.mNumPitstops,
+      pitting: finiteNumber(vehicle.mInPits) !== null && finiteNumber(vehicle.mInPits) !== 0,
+      lapDistance: vehicle.mLapDist,
+      // R2LA exposes mLastSector1/2, but their units and cumulative semantics
+      // are not established here. Omit them rather than publish false sectors.
+    }));
+}
+
+/**
+ * Isolated R2LA adapter. It deliberately shares the existing B404 DTO builder
+ * so the public contract and the track renderer keep their current shape.
+ */
+export async function collectR2laLiveTiming(sourceId, options = {}) {
+  const registry = options.registry ?? SOURCE_REGISTRY;
+  const source = registry[sourceId];
+  if (!source) throw new Error("unknown_source");
+  const baseUrl = typeof source.r2laBaseUrl === "string" ? source.r2laBaseUrl.replace(/\/$/, "") : "";
+  if (!baseUrl) throw new Error("r2la_source_unconfigured");
+
+  const fetchImpl = options.fetchImpl ?? globalThis.fetch;
+  if (typeof fetchImpl !== "function") throw new Error("fetch_unavailable");
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const now = options.now ?? (() => new Date().toISOString());
+  // The R2LA payload has no verified layout identity. Only a caller that has
+  // resolved the active RF2 event locally may opt into publishing this value.
+  const trackTechnicalId = typeof options.trackTechnicalId === "string"
+    && options.trackTechnicalId.trim()
+    ? options.trackTechnicalId.trim()
+    : null;
+  const result = await requestJson(`${baseUrl}/live/get_data`, { fetchImpl, timeoutMs });
+  const session = result.ok ? r2laSession(result.body) : null;
+  const vehicles = result.ok ? r2laVehicles(result.body) : null;
+  if (!session || !vehicles) {
+    return { ok: false, sourceId, status: "error", error: SOURCE_TIMEOUT_ERROR };
+  }
+
+  return {
+    ok: true,
+    data: buildData(
+      sourceId,
+      session,
+      vehicles,
+      null,
+      now(),
+      null,
+      null,
+      null,
+      null,
+      trackTechnicalId,
+    ),
+  };
+}
+
+function nativeTrackContext(options) {
+  const trackTechnicalId = publicText(options.nativeTrackTechnicalId) || null;
+  if (trackTechnicalId === null) return null;
+  return {
+    serverUptime: null,
+    trackLength: null,
+    trackTechnicalId,
+  };
+}
+
+async function collectContext(source, options, fetchImpl, timeoutMs) {
+  if (options.disableManagerContext === true) {
+    return { serverUptime: null, trackLength: null, trackTechnicalId: null };
+  }
+  return nativeTrackContext(options) ?? fetchManagerContext(source, {
+    fetchImpl,
+    timeoutMs,
+    managerUrl: managerBaseUrl(options),
+  });
 }
 
 export async function collectLiveTiming(sourceId, options = {}) {
@@ -674,6 +1249,12 @@ export async function collectLiveTiming(sourceId, options = {}) {
   if (!sessionResult.ok || !sessionResult.body || typeof sessionResult.body !== "object") {
     return { ok: false, sourceId, status: "error", error: SOURCE_TIMEOUT_ERROR };
   }
+  const vmaxCache = options.vmaxCache ?? new Map();
+  const vmaxState = vmaxSessionState(
+    vmaxCache,
+    sourceId,
+    publicText(sessionResult.body.session, "—"),
+  );
 
   const selectionResult = await requestJson(
     `${source.baseUrl}/rest/race/selection`,
@@ -688,9 +1269,72 @@ export async function collectLiveTiming(sourceId, options = {}) {
     `${source.baseUrl}/rest/watch/standings`,
     { fetchImpl, timeoutMs },
   );
-  if (!standingsResult.ok || !Array.isArray(standingsResult.body)) {
-    return { ok: false, sourceId, status: "error", error: "standings_unavailable" };
+  if (!standingsResult.ok || !Array.isArray(standingsResult.body) || standingsResult.body.length === 0) {
+    const standingsFailure = classifyStandingsFailure(standingsResult);
+    const sharedMemory = await readSharedMemory(options);
+    const fallbackVehicles = sharedMemoryFallbackStandings(
+      sharedMemory,
+      sessionResult.body.numberOfVehicles,
+    );
+
+    const weatherClientStatus = await detectWeatherClient(sourceId, {
+      probe: options.weatherClientProbe,
+    });
+    if (fallbackVehicles) {
+      return {
+        ok: true,
+        degraded: false,
+        warning: "native_shared_memory_fallback",
+        standingsFailure,
+        upstreamStatus: standingsResult.status,
+        data: buildData(
+          sourceId,
+          sessionResult.body,
+          fallbackVehicles,
+          null,
+          now(),
+          selection,
+          null,
+          weatherClientStatus,
+          null,
+          null,
+          "online",
+          true,
+          "shared_memory_scoring",
+          null,
+          options.tyreHistoryStore ?? null,
+          standingsFailure,
+        ),
+      };
+    }
+    const managerContext = await collectContext(source, options, fetchImpl, timeoutMs);
+    return {
+      ok: true,
+      degraded: true,
+      error: "standings_unavailable",
+      standingsFailure,
+      upstreamStatus: standingsResult.status,
+      data: buildData(
+        sourceId,
+        sessionResult.body,
+        [],
+        null,
+        now(),
+        selection,
+        managerContext.serverUptime,
+        weatherClientStatus,
+        managerContext.trackLength,
+        managerContext.trackTechnicalId,
+        "degraded",
+        false,
+        "unavailable",
+        null,
+        null,
+        sharedMemoryFallbackIssue(sharedMemory, sessionResult.body.numberOfVehicles),
+      ),
+    };
   }
+  rememberSessionVmax(vmaxState, standingsResult.body);
 
   const historyResult = options.includeHistory === false
     ? null
@@ -699,11 +1343,12 @@ export async function collectLiveTiming(sourceId, options = {}) {
         { fetchImpl, timeoutMs },
       );
   const history = historyResult?.ok ? historyResult.body : null;
-  const managerContext = await fetchManagerContext(source, {
-    fetchImpl,
-    timeoutMs,
-    managerUrl: managerBaseUrl(options),
-  });
+  const activeVehicles = enrichActiveVehiclesWithHistory(standingsResult.body, history);
+  const sharedMemory = await readSharedMemory(options);
+  const telemetryVehicles = sharedMemory === null
+    ? activeVehicles
+    : enrichActiveVehiclesWithSharedMemory(activeVehicles, sharedMemory);
+  const managerContext = await collectContext(source, options, fetchImpl, timeoutMs);
   const weatherClientStatus = await detectWeatherClient(sourceId, {
     probe: options.weatherClientProbe,
   });
@@ -713,7 +1358,7 @@ export async function collectLiveTiming(sourceId, options = {}) {
     data: buildData(
       sourceId,
       sessionResult.body,
-      standingsResult.body,
+      telemetryVehicles,
       history,
       now(),
       selection,
@@ -721,6 +1366,11 @@ export async function collectLiveTiming(sourceId, options = {}) {
       weatherClientStatus,
       managerContext.trackLength,
       managerContext.trackTechnicalId,
+      undefined,
+      undefined,
+      undefined,
+      vmaxState.maxSpeedMsByParticipantId,
+      options.tyreHistoryStore ?? null,
     ),
   };
 }
@@ -813,6 +1463,7 @@ export class LiveTimingStreamHub {
         running: false,
         sequence: 0,
         lastEvent: null,
+        healthState: null,
       };
       this.states.set(sourceId, state);
     }
@@ -874,11 +1525,32 @@ export class LiveTimingStreamHub {
     const startedAt = Date.now();
     try {
       const result = await this.collect(state.sourceId);
+      const nextHealthState = result.ok
+        ? result.degraded
+          ? `degraded:${result.error ?? "partial"}`
+          : "online"
+        : `error:${result.error ?? "adapter_failure"}`;
+      if (state.healthState !== nextHealthState) {
+        const previousHealthState = state.healthState;
+        state.healthState = nextHealthState;
+        if (nextHealthState === "online" && previousHealthState) {
+          console.info(
+            `[Live Timing] source=${state.sourceId} recovered previous=${previousHealthState}`,
+          );
+        } else if (nextHealthState !== "online") {
+          const upstreamStatus = result.upstreamStatus ?? "n/a";
+          const standingsFailure = result.standingsFailure ?? "n/a";
+          console.warn(
+            `[Live Timing] source=${state.sourceId} state=${nextHealthState} standingsFailure=${standingsFailure} upstreamStatus=${upstreamStatus}`,
+          );
+        }
+      }
       if (result.ok) {
         this.broadcast(state, "snapshot", {
           success: true,
           sourceId: state.sourceId,
           transport: "sse",
+          degraded: result.degraded === true,
           data: result.data,
         });
       } else {
@@ -890,6 +1562,14 @@ export class LiveTimingStreamHub {
         });
       }
     } catch {
+      const nextHealthState = "error:adapter_failure";
+      if (state.healthState !== nextHealthState) {
+        const previousHealthState = state.healthState;
+        state.healthState = nextHealthState;
+        console.warn(
+          `[Live Timing] source=${state.sourceId} state=${nextHealthState} previous=${previousHealthState ?? "none"}`,
+        );
+      }
       this.broadcast(state, "status", {
         success: false,
         sourceId: state.sourceId,
@@ -913,11 +1593,15 @@ export class LiveTimingStreamHub {
 
 export function createPublicLiveTimingHandler(options = {}) {
   const registry = options.registry ?? SOURCE_REGISTRY;
+  const vmaxCache = options.vmaxCache ?? new Map();
+  const tyreHistoryStore = options.tyreHistoryStore ?? createTyreHistoryStore();
   const collect = options.collector ?? ((sourceId, collectOptions = {}) =>
     collectLiveTiming(sourceId, {
       ...options,
       ...collectOptions,
       registry,
+      vmaxCache,
+      tyreHistoryStore,
     }));
   const geometryProvider = options.geometryProvider ?? createTrackGeometryProvider({
     registry,
@@ -925,7 +1609,7 @@ export function createPublicLiveTimingHandler(options = {}) {
     timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
   });
   const streamHub = options.streamHub ?? new LiveTimingStreamHub({
-    collect: (sourceId) => collect(sourceId, { includeHistory: false }),
+    collect: (sourceId) => collect(sourceId),
     registry,
   });
 
@@ -1027,7 +1711,11 @@ export function createPublicLiveTimingHandler(options = {}) {
         });
         return;
       }
-      writeJson(response, 200, { success: true, data: result.data });
+      writeJson(response, 200, {
+        success: true,
+        degraded: result.degraded === true,
+        data: result.data,
+      });
     } catch {
       writeJson(response, 500, {
         success: false,

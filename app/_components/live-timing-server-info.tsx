@@ -10,7 +10,7 @@ import {
   Gauge,
   CircleDot,
 } from "lucide-react";
-import type { ServerInfo, WeatherClientStatus } from "../_types/live-timing";
+import type { ServerInfo, ServerStatus, WeatherClientStatus } from "../_types/live-timing";
 import { formatRFactorDuration } from "../_services/live-timing-formatters";
 import { formatSessionDisplayLabel } from "../_services/live-timing-session-labels";
 
@@ -18,6 +18,8 @@ interface ServerInfoPanelProps {
   server: ServerInfo;
   trackTemperature: number | null;
   weatherClientStatus?: WeatherClientStatus | null;
+  statusOverride?: ServerStatus;
+  standingsNotice?: string | null;
 }
 
 function numberLabel(value: number | null, suffix = ""): string {
@@ -38,7 +40,15 @@ function lapsLabel(value: number | null, total: number | null): string {
   return `${value} / ${total} tours`;
 }
 
-export function ServerInfoPanel({ server, trackTemperature, weatherClientStatus }: ServerInfoPanelProps) {
+function standingsSourceLabel(source: ServerInfo["standingsSource"]): string {
+  if (source === "standings/history") return "source standings/history";
+  if (source === "shared_memory_scoring") return "classement natif Shared Memory";
+  if (source === "unavailable") return "source classement indisponible";
+  return "source standings";
+}
+
+export function ServerInfoPanel({ server, trackTemperature, weatherClientStatus, statusOverride, standingsNotice }: ServerInfoPanelProps) {
+  const status = statusOverride ?? server.status;
   const statusLabel: Record<string, string> = {
     online: "Source accessible",
     offline: "Hors ligne",
@@ -90,15 +100,20 @@ export function ServerInfoPanel({ server, trackTemperature, weatherClientStatus 
             </p>
             <h2 className="mt-1 text-2xl font-black text-white">{server.name}</h2>
           </div>
-          <div className={`flex items-center gap-2 ${statusColor[server.status]}`}>
+          <div className={`flex items-center gap-2 ${statusColor[status]}`}>
             <span
-              className={`inline-block h-2 w-2 rounded-full ${statusDotColor[server.status]} ${
-                server.status === "online" ? "animate-glow-pulse" : ""
+              className={`inline-block h-2 w-2 rounded-full ${statusDotColor[status]} ${
+                status === "online" ? "animate-glow-pulse" : ""
               }`}
             />
-            <span className="text-sm font-bold">{statusLabel[server.status]}</span>
+            <span className="text-sm font-bold">{statusLabel[status]}</span>
           </div>
         </div>
+        {standingsNotice ? (
+          <p data-standings-notice="native-shared-memory" className="mb-4 rounded-lg border border-cyan-300/20 bg-cyan-300/[0.06] px-3 py-2 text-xs text-cyan-100">
+            {standingsNotice}
+          </p>
+        ) : null}
 
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <InfoCard icon={<MapPin className="h-4 w-4 text-orange-400" />} label="Circuit" value={server.circuit} />
@@ -112,7 +127,7 @@ export function ServerInfoPanel({ server, trackTemperature, weatherClientStatus 
             icon={<Users className="h-4 w-4 text-orange-400" />}
             label="Pilotes"
             value={countLabel(server.driversCount, server.maxDrivers)}
-            sub="source standings"
+            sub={standingsSourceLabel(server.standingsSource)}
           />
           <InfoCard icon={<Gauge className="h-4 w-4 text-orange-400" />} label="Catégorie" value={server.category} />
           <InfoCard

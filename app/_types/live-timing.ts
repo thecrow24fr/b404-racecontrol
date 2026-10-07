@@ -75,7 +75,26 @@ export interface ServerInfo {
   trackTechnicalId?: string | null;
   /** Longueur runtime renvoyée par sessionInfo, en mètres. */
   lapDistance?: number | null;
+  /** Route native réellement utilisée pour le classement courant. */
+  standingsSource?: "standings" | "standings/history" | "shared_memory_scoring" | "unavailable";
+  /** Cause explicite si le classement est absent; ne contient aucun identifiant natif. */
+  standingsUnavailableReason?: string | null;
   status: ServerStatus;
+}
+
+export interface TyreHistoryEntry {
+  lap: number;
+  sessionSeconds: number;
+  /** Temps au tour public réellement observé avec cet échantillon. */
+  lapTime: string;
+  relay: number;
+  pitOrTyreChange: boolean;
+  frontTyreCompound: string;
+  rearTyreCompound: string;
+  wearFrontLeft: number;
+  wearFrontRight: number;
+  wearRearLeft: number;
+  wearRearRight: number;
 }
 
 export interface StandingEntry {
@@ -87,10 +106,12 @@ export interface StandingEntry {
   /** Alias historique conservé pour les fixtures/providers existants. */
   prevPosition: number;
   driverName: string;
+  /** Participant class, published only when proven by native mControl. */
+  driverType?: "human" | "ai";
   team: string;
   car: string;
   carNumber?: string;
-  carClass: CarCategory;
+  carClass: CarCategory | null;
   laps: number;
   gapToLeader: string;
   gapToNext: string;
@@ -100,6 +121,9 @@ export interface StandingEntry {
   nextParticipantId?: string | null;
   bestLap: string;
   lastLap: string;
+  /** Maximum observé dans la session depuis Vehicle.carVelocity, converti de m/s en km/h. */
+  maxSpeedKmh?: number | null;
+  /** Secteurs du dernier tour; S3 est le résidu contrôlé lorsque le dernier tour et S1/S2 sont cohérents. */
   sector1: string;
   sector2: string;
   sector3: string | null;
@@ -109,8 +133,23 @@ export interface StandingEntry {
   status: DriverStatus;
   pitStops: number;
   isPole?: boolean;
-  /** Valeur native fuelFraction ; aucune conversion en litres ou en pourcentage. */
+  /** Litres de carburant provenant de la paire native Shared Memory vérifiée. */
+  fuelLiters?: number | null;
+  /** Capacité native en litres du même participant, requise pour la jauge/% . */
+  fuelCapacityLiters?: number | null;
+  /** Fraction calculée exclusivement mFuel/mFuelCapacity après jointure vérifiée. */
   fuelFraction?: number | null;
+  /** Composé natif de l’essieu avant, absent de la Swagger Watch actuelle. */
+  frontTyreCompound?: string | null;
+  /** Composé natif de l’essieu arrière, absent de la Swagger Watch actuelle. */
+  rearTyreCompound?: string | null;
+  /** Mesures natives d’usure par roue, absentes de la Swagger Watch actuelle. */
+  wearFrontLeft?: number | null;
+  wearFrontRight?: number | null;
+  wearRearLeft?: number | null;
+  wearRearRight?: number | null;
+  /** Journal collecté après démarrage du preview, jamais rétroactif. */
+  tyreHistory?: TyreHistoryEntry[];
   /** Position longitudinale native, en mètres lorsque fournie. */
   lapDistance?: number | null;
   /** Dérivée uniquement lorsque lapDistance et la longueur source existent. */

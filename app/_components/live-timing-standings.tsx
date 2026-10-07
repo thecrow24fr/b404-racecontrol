@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import {
   Timer,
   Filter,
@@ -12,7 +13,10 @@ import {
 } from "lucide-react";
 import type { SessionPhase, StandingEntry } from "../_types/live-timing";
 import { formatSessionDisplayLabel } from "../_services/live-timing-session-labels";
+import { bestLapEntry } from "../_services/live-timing-best-lap.mjs";
+import { orderStandingsForPhase } from "../_services/live-timing-standings-order.mjs";
 import { StandingRow } from "./live-timing-standing-row";
+import { TyreHistoryDialog } from "./live-tyre-history-dialog";
 
 interface StandingsTableProps {
   standings: StandingEntry[];
@@ -42,19 +46,15 @@ function rankingSessionLabel(sessionName?: string, sessionPhase?: SessionPhase):
 }
 
 /**
- * Tableau de classement complet — affiche la liste des pilotes
- * avec leurs temps, écarts et secteurs.
- *
- * Features préparées pour les prochains sprints :
- * - 🔄 Rafraîchissement automatique (placeholder)
- * - 📊 Filtres / Tris (placeholder)
- * - 📥 Export (placeholder)
+ * Tableau de classement complet — les informations absentes du DTO restent
+ * visibles comme « — » afin de ne jamais fabriquer une télémétrie.
  */
 export function StandingsTable({
   standings,
   sessionName,
   sessionPhase,
 }: StandingsTableProps) {
+  const [historyEntry, setHistoryEntry] = useState<StandingEntry | null>(null);
   if (standings.length === 0) {
     return (
       <section className="border-b border-white/10 bg-[#06101d]">
@@ -64,19 +64,19 @@ export function StandingsTable({
             Aucune donnée de classement disponible
           </p>
           <p className="mt-2 text-sm text-gray-500">
-            Le classement apparaîtra automatiquement lorsque la session
-            sera active.
+            Le classement apparaîtra automatiquement lorsque la session sera active.
           </p>
         </div>
       </section>
     );
   }
 
-  const poleTime = standings.find((e) => e.position === 1)?.bestLap;
+  const bestLap = bestLapEntry(standings);
+  const orderedStandings = orderStandingsForPhase(standings, sessionPhase);
 
   return (
     <section className="border-b border-white/10 bg-[#06101d]">
-      <div className="mx-auto max-w-7xl px-6 py-8">
+      <div className="w-full max-w-none px-3 py-8 sm:px-4 lg:px-6">
         {/* En-tête */}
         <div className="mb-5 flex flex-wrap items-center justify-between gap-4">
           <div>
@@ -88,7 +88,7 @@ export function StandingsTable({
             </h2>
           </div>
 
-          {/* Actions (placeholders pour futurs sprints) */}
+          {/* Contrôles conservés dans le style B404 */}
           <div className="flex items-center gap-2">
             <button
               type="button"
@@ -118,44 +118,63 @@ export function StandingsTable({
           </div>
         </div>
 
-        {/* Meilleur tour */}
-        {poleTime && (
+        {/* Meilleur tour — indépendant de Dernier tour */}
+        {bestLap && (
           <div className="mb-4 rounded-2xl border border-purple-400/15 bg-purple-500/5 px-4 py-2.5">
             <p className="text-xs text-purple-300">
               <span className="font-bold">Meilleur tour :</span>{" "}
-              <span className="font-mono font-bold">{poleTime}</span> —{" "}
-              {standings.find((e) => e.position === 1)?.driverName}
+              <span className="font-mono font-bold">{bestLap.entry.bestLap}</span> —{" "}
+              {bestLap.entry.driverName}
             </p>
           </div>
         )}
 
-        {/* Tableau responsive */}
+        {/* Tableau responsive : la largeur permet de consulter toutes les colonnes par défilement horizontal. */}
         <div className="overflow-x-auto rounded-2xl border border-white/10">
-          <table className="w-full min-w-[640px]">
-            {/* En-têtes de colonnes */}
+          <table className="w-full min-w-[1800px]">
             <thead>
               <tr className="border-b border-white/10 bg-[#0b1728]">
-                <Th className="sticky left-0 z-10 w-12 bg-[#0b1728] text-left">#</Th>
-                <Th className="w-8 text-center">Départ</Th>
-                <Th className="text-left">Pilote</Th>
-                <Th className="hidden text-left lg:table-cell">Voiture</Th>
-                <Th className="w-14 text-center">Tours</Th>
-                <Th className="text-right">Écart</Th>
-                <Th className="hidden text-right md:table-cell">Au suivant</Th>
-                <Th className="hidden text-right lg:table-cell">Meilleur tour</Th>
-                <Th className="hidden text-right xl:table-cell">Secteurs</Th>
-                <Th className="hidden text-right 2xl:table-cell">Carburant</Th>
-                <Th className="w-16 text-right">Statut</Th>
+                <Th rowSpan={2} className="sticky left-0 z-10 w-16 bg-[#0b1728] text-left">Pos.</Th>
+                <Th rowSpan={2} className="w-24 text-center">Évol.<span className="block text-[9px] tracking-normal">vs qualif.</span></Th>
+                <Th rowSpan={2} className="text-left">Pilote</Th>
+                <Th rowSpan={2} className="text-center">Pneus</Th>
+                <Th rowSpan={2} className="text-center">Classe</Th>
+                <Th rowSpan={2} className="text-left">Voiture</Th>
+                <Th rowSpan={2} className="text-center">Tours</Th>
+                <Th rowSpan={2} className="text-center">Arrêts</Th>
+                <Th rowSpan={2} className="text-right">Écart</Th>
+                <Th rowSpan={2} className="text-right">Meilleur<span className="block">tour</span></Th>
+                <Th rowSpan={2} className="text-right">Dernier<span className="block">tour</span></Th>
+                <th colSpan={3} className="px-2 py-2 text-center text-[10px] font-black uppercase tracking-[0.15em] text-cyan-300">
+                  Secteurs du dernier tour
+                </th>
+                <Th rowSpan={2} className="text-right">VMax<span className="block text-[9px] tracking-normal">km/h</span></Th>
+                <Th rowSpan={2} className="text-center">Pneus<span className="block text-[9px] tracking-normal">AV/AR</span></Th>
+                <Th rowSpan={2} className="text-right">Carburant</Th>
+                <th colSpan={4} className="px-2 py-2 text-center text-[10px] font-black uppercase tracking-[0.15em] text-cyan-300">
+                  Usure des 4 pneus
+                </th>
+                <Th rowSpan={2} className="text-right">Statut</Th>
+              </tr>
+              <tr className="border-b border-white/10 bg-[#0b1728]">
+                <Th className="text-right">S1</Th>
+                <Th className="text-right">S2</Th>
+                <Th className="text-right">S3</Th>
+                <Th className="text-right">AVG</Th>
+                <Th className="text-right">AVD</Th>
+                <Th className="text-right">ARG</Th>
+                <Th className="text-right">ARD</Th>
               </tr>
             </thead>
 
-            {/* Corps */}
             <tbody className="divide-y divide-white/[0.04]">
-              {standings.map((entry) => (
+              {orderedStandings.map((entry) => (
                 <StandingRow
                   key={`${entry.position}-${entry.driverName}`}
                   entry={entry}
-                  isPole={entry.bestLap === poleTime}
+                  isFastestLap={entry.participantId === bestLap?.entry.participantId}
+                  sessionPhase={sessionPhase}
+                  onOpenTyreHistory={setHistoryEntry}
                 />
               ))}
             </tbody>
@@ -171,23 +190,34 @@ export function StandingsTable({
             <ChevronDown className="h-3 w-3 text-red-400" /> Perte
           </span>
           <span className="flex items-center gap-1">
-            <Wrench className="h-3 w-3 text-yellow-400" /> Aux stands
+            <Wrench className="h-3 w-3 text-cyan-300" /> Aux stands
           </span>
           <span className="flex items-center gap-1">
             <TriangleAlert className="h-3 w-3 text-red-400" /> Abandon
           </span>
         </div>
+        {historyEntry ? <TyreHistoryDialog entry={historyEntry} onClose={() => setHistoryEntry(null)} /> : null}
       </div>
     </section>
   );
 }
 
-// ─── Sous-composants ──────────────────────────────────────────────────
-
-function Th({ children, className }: { children?: React.ReactNode; className?: string }) {
+function Th({
+  children,
+  className,
+  rowSpan,
+  colSpan,
+}: {
+  children?: React.ReactNode;
+  className?: string;
+  rowSpan?: number;
+  colSpan?: number;
+}) {
   return (
     <th
-      className={`px-2 py-3 text-[10px] font-black uppercase tracking-[0.15em] text-gray-500 sm:px-3 ${className ?? ""}`}
+      rowSpan={rowSpan}
+      colSpan={colSpan}
+      className={`px-1.5 py-2.5 text-[10px] font-black uppercase tracking-[0.15em] text-gray-500 sm:px-2 ${className ?? ""}`}
     >
       {children}
     </th>

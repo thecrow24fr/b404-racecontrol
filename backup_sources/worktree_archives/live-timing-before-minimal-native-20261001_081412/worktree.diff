@@ -1,0 +1,2443 @@
+diff --git a/app/_components/live-timing-client.tsx b/app/_components/live-timing-client.tsx
+index ffa5636..1cc4ecb 100644
+--- a/app/_components/live-timing-client.tsx
++++ b/app/_components/live-timing-client.tsx
+@@ -66,6 +66,11 @@ export function LiveTimingClient({
+     useLiveTiming(initialData, selectedSourceId);
+   const selectedSource = sources.find((item) => item.sourceId === selectedSourceId);
+   const sourceLabel = selectedSource?.label ?? `Source ${selectedSourceId}`;
++  const trackSessionKey = [
++    selectedSourceId,
++    data.session.sessionCode ?? data.server.currentSession,
++    data.session.phase,
++  ].join(":");
+   const sourceBadgeClass = isLive
+     ? "bg-emerald-500/10 text-emerald-400"
+     : "bg-amber-500/10 text-amber-400";
+@@ -145,7 +150,9 @@ export function LiveTimingClient({
+         weatherClientStatus={data.session.weatherClientStatus}
+       />
+       <LiveTimingTrackLine
++        key={trackSessionKey}
+         sourceId={selectedSourceId}
++        sessionKey={trackSessionKey}
+         trackTechnicalId={data.server.trackTechnicalId ?? null}
+         lapDistance={data.server.lapDistance ?? null}
+         trackLength={data.server.trackLength ?? null}
+diff --git a/app/_components/live-timing-standing-row.tsx b/app/_components/live-timing-standing-row.tsx
+index a9cfaa2..651a7b0 100644
+--- a/app/_components/live-timing-standing-row.tsx
++++ b/app/_components/live-timing-standing-row.tsx
+@@ -8,30 +8,144 @@ import {
+   Wrench,
+   TriangleAlert,
+ } from "lucide-react";
+-import type { StandingEntry } from "../_types/live-timing";
++import type { DriverStatus, SessionPhase, StandingEntry } from "../_types/live-timing";
++import { getCarClassPalette } from "../_services/live-timing-visual-theme";
+ 
+ interface StandingRowProps {
+   entry: StandingEntry;
+   isPole?: boolean;
++  sessionPhase?: SessionPhase;
++}
++
++function positionEvolution(entry: StandingEntry, sessionPhase?: SessionPhase): number | null {
++  if (
++    sessionPhase !== "race" ||
++    entry.startingPosition === null ||
++    entry.startingPosition === undefined ||
++    entry.startingPosition <= 0
++  ) {
++    return null;
++  }
++  return entry.startingPosition - entry.position;
++}
++
++function evolutionLabel(delta: number | null): string {
++  if (delta === null) return "—";
++  if (delta > 0) return `+${delta}`;
++  if (delta < 0) return `−${Math.abs(delta)}`;
++  return "0";
++}
++
++function formatFuel(fuelFraction: number | null | undefined): string {
++  if (
++    fuelFraction === null ||
++    fuelFraction === undefined ||
++    !Number.isFinite(fuelFraction) ||
++    fuelFraction < 0 ||
++    fuelFraction > 1
++  ) {
++    return "—";
++  }
++  return `${Math.round(fuelFraction * 100)} %`;
++}
++
++function statusPresentation(entry: StandingEntry): {
++  key: DriverStatus;
++  label: string;
++  className: string;
++} {
++  const key: DriverStatus = entry.inPit ? "pit" : entry.status;
++  switch (key) {
++    case "pit":
++      return {
++        key,
++        label: "Aux stands",
++        className: "border-slate-300/60 bg-slate-500/20 text-slate-100",
++      };
++    case "finished":
++      return {
++        key,
++        label: "Terminé",
++        className: "border-blue-300/50 bg-blue-500/15 text-blue-200",
++      };
++    case "dnf":
++    case "out":
++      return {
++        key,
++        label: "Abandon",
++        className: "border-red-400/50 bg-red-500/15 text-red-200",
++      };
++    case "running":
++    default:
++      return {
++        key: "running",
++        label: "En piste",
++        className: "border-emerald-400/50 bg-emerald-500/10 text-emerald-200",
++      };
++  }
++}
++
++function FuelMeter({ fuelFraction }: { fuelFraction?: number | null }) {
++  const formatted = formatFuel(fuelFraction);
++  if (formatted === "—") {
++    return (
++      <span
++        className="inline-flex rounded-md border border-slate-700/70 bg-slate-800/60 px-2 py-1 font-mono text-xs tabular-nums text-slate-500"
++        title="Carburant indisponible via le contrat natif"
++      >
++        N/D
++      </span>
++    );
++  }
++
++  const percentage = Math.round((fuelFraction ?? 0) * 100);
++  return (
++    <span
++      className="inline-flex min-w-[4.75rem] items-center gap-2 rounded-md border border-cyan-400/30 bg-cyan-400/[0.06] px-2 py-1 font-mono text-xs tabular-nums text-cyan-100"
++      aria-label={`Carburant ${formatted}`}
++    >
++      <span className="h-1.5 w-12 overflow-hidden rounded-full bg-slate-700/80" aria-hidden="true">
++        <span
++          className="block h-full rounded-full bg-cyan-300"
++          style={{ width: `${percentage}%` }}
++        />
++      </span>
++      {formatted}
++    </span>
++  );
++}
++
++function TelemetryUnavailable({ label }: { label: string }) {
++  return (
++    <span
++      className="inline-flex rounded-md border border-slate-700/70 bg-slate-800/60 px-2 py-1 font-mono text-xs tabular-nums text-slate-500"
++      title={`${label} indisponible via le contrat natif`}
++    >
++      N/D
++    </span>
++  );
+ }
+ 
+ /**
+- * Ligne du classement — affiche la position, les écarts, les secteurs
+- * et le statut d'un pilote.
+- *
+- * Ce composant est conçu pour être réutilisable :
+- * - Dans le tableau complet (StandingsTable)
+- * - Dans des vues réduites (top 3, vue mobile)
+- * - Plus tard avec des données réelles sans modification
++ * Ligne du classement — affiche uniquement les données prouvées par le DTO
++ * public et conserve les valeurs absentes sous la forme « — ».
+  */
+-export function StandingRow({ entry, isPole = false }: StandingRowProps) {
+-  const startingPosition = entry.startingPosition ?? entry.prevPosition;
+-  const isGain = startingPosition > entry.position;
++export function StandingRow({ entry, isPole = false, sessionPhase }: StandingRowProps) {
++  const evolution = positionEvolution(entry, sessionPhase);
++  const status = statusPresentation(entry);
++  const classPalette = getCarClassPalette(entry.carClass);
++  const classLabel = entry.carClass?.trim() || "Inconnue";
++  const evolutionAria =
++    sessionPhase !== "race"
++      ? "Évolution non affichée hors course"
++      : entry.startingPosition === null || entry.startingPosition === undefined
++        ? "Position de qualification indisponible"
++        : `Position de qualification ${entry.startingPosition}, position actuelle ${entry.position}`;
+ 
+   return (
+     <tr className={`group border-b border-white/[0.04] transition hover:bg-white/[0.03] ${isPole ? "bg-orange-500/[0.03]" : ""}`}>
+       {/* Position */}
+-      <td className="sticky left-0 z-10 bg-[#0d1b2e] px-3 py-2.5 align-middle group-hover:bg-[#0f1e32] sm:px-4">
++      <td className="sticky left-0 z-10 bg-[#0d1b2e] px-2 py-2.5 align-middle group-hover:bg-[#0f1e32] sm:px-2">
+         <div className="flex items-center gap-2">
+           <span className="min-w-[1.5rem] text-right text-sm font-black tabular-nums text-white">
+             {entry.position}
+@@ -39,134 +153,173 @@ export function StandingRow({ entry, isPole = false }: StandingRowProps) {
+           {entry.position === 1 && (
+             <span className="text-xs leading-none text-orange-400">★</span>
+           )}
+-          {entry.status === "pit" && (
+-            <Wrench className="h-3 w-3 text-cyan-300" />
++          {entry.inPit === true && (
++            <Wrench className="h-3 w-3 text-slate-300" aria-label="Aux stands" />
+           )}
+           {entry.underYellow === true && (
+-            <FlagIcon className="h-3 w-3 text-yellow-300" aria-label="Sous drapeau jaune" />
++            <FlagIcon className="h-3 w-3 text-slate-500" aria-label="Sous drapeau, Safety Car non confirmé" />
+           )}
+-          {entry.status === "dnf" && (
+-            <TriangleAlert className="h-3 w-3 text-red-400" />
++          {(entry.status === "dnf" || entry.status === "out") && (
++            <TriangleAlert className="h-3 w-3 text-red-400" aria-label="Abandon" />
+           )}
+         </div>
+       </td>
+ 
+-      {/* Changement de position */}
++      {/* Évolution par rapport à la qualification */}
+       <td
+-        className="px-0 py-2.5 align-middle"
+-        title={`Position de départ ${startingPosition}, position actuelle ${entry.position}`}
+-        aria-label={`Position de départ ${startingPosition}, position actuelle ${entry.position}`}
++        className="px-2 py-2.5 align-middle text-center sm:px-3"
++        title={evolutionAria}
++        aria-label={evolutionAria}
+       >
+-        <div className="flex items-center justify-center gap-1">
+-          {startingPosition > 0 && startingPosition !== entry.position ? (
+-            isGain ? (
++        <div className="flex items-center justify-center gap-1 font-bold tabular-nums">
++          {evolution === null ? (
++            <span className="text-gray-500">—</span>
++          ) : evolution > 0 ? (
++            <>
+               <ChevronUp className="h-3.5 w-3.5 text-emerald-400" aria-label="Gain" />
+-            ) : (
++              <span className="text-emerald-400">{evolutionLabel(evolution)}</span>
++            </>
++          ) : evolution < 0 ? (
++            <>
+               <ChevronDown className="h-3.5 w-3.5 text-red-400" aria-label="Perte" />
+-            )
+-          ) : startingPosition > 0 ? (
+-            <Minus className="h-3 w-3 text-gray-600" aria-label="Position inchangée" />
+-          ) : null}
+-          <span className="sr-only">Départ {startingPosition}</span>
++              <span className="text-red-400">{evolutionLabel(evolution)}</span>
++            </>
++          ) : (
++            <>
++              <Minus className="h-3 w-3 text-gray-500" aria-label="Position inchangée" />
++              <span className="text-gray-400">0</span>
++            </>
++          )}
+         </div>
+       </td>
+ 
+       {/* Pilote + Équipe */}
+       <td className="px-2 py-2.5 align-middle sm:px-3">
+-        <div className="min-w-0">
+-          <p className="truncate text-sm font-bold text-white">
+-            {entry.driverName}
+-          </p>
+-          <p className="truncate text-[11px] text-gray-500">
+-            {entry.team}
+-          </p>
++        <div className="min-w-[9rem]">
++          <p className="truncate text-sm font-bold text-white">{entry.driverName}</p>
++          <p className="truncate text-[11px] text-gray-500">{entry.team || "—"}</p>
+         </div>
+       </td>
+ 
+-      {/* Voiture (caché sur mobile) */}
+-      <td className="hidden px-3 py-2.5 align-middle lg:table-cell">
+-        <p className="text-sm text-gray-400">{entry.car}</p>
++      {/* Classe — palette partagée avec la carte Progression Live */}
++      <td data-column="classe" className="px-2 py-2.5 align-middle text-center">
++        <span
++          className="inline-flex max-w-[9rem] items-center rounded-md border px-2 py-1 text-[10px] font-black uppercase tracking-[0.08em]"
++          style={{
++            backgroundColor: classPalette.softBackground,
++            borderColor: classPalette.stroke,
++            color: classPalette.text,
++          }}
++          title={`Classe rFactor 2 : ${classLabel}`}
++        >
++          {classLabel}
++        </span>
++      </td>
++
++      {/* Voiture */}
++      <td data-column="voiture" className="px-2 py-2.5 align-middle">
++        <div className="flex min-w-[11rem] items-center gap-2">
++          {entry.carNumber?.trim() ? (
++            <span
++              className="inline-flex h-6 min-w-7 items-center justify-center rounded border px-1.5 text-[10px] font-black tabular-nums"
++              style={{
++                backgroundColor: classPalette.softBackground,
++                borderColor: classPalette.stroke,
++                color: classPalette.text,
++              }}
++            >
++              #{entry.carNumber.trim()}
++            </span>
++          ) : null}
++          <p className="truncate text-sm text-gray-400">{entry.car || "—"}</p>
++        </div>
+       </td>
+ 
+       {/* Tours */}
+-      <td className="px-2 py-2.5 align-middle text-center sm:px-3">
+-        <span className="text-sm font-bold tabular-nums text-white">
+-          {entry.laps}
+-        </span>
++      <td className="px-2 py-2.5 align-middle text-center">
++        <span className="text-sm font-bold tabular-nums text-white">{entry.laps}</span>
++      </td>
++
++      {/* Arrêts */}
++      <td className="px-2 py-2.5 align-middle text-center">
++        <span className="text-sm tabular-nums text-gray-300">{entry.pitStops}</span>
+       </td>
+ 
+       {/* Écart au leader */}
+-      <td className="px-2 py-2.5 align-middle text-right sm:px-3">
++      <td className="px-2 py-2.5 align-middle text-right">
+         <span
+-          className={`text-sm tabular-nums ${
+-            entry.gapToLeader === "Leader"
+-              ? "font-black text-orange-300"
+-              : "text-gray-300"
++          className={`whitespace-nowrap text-sm tabular-nums ${
++            entry.gapToLeader === "Leader" ? "font-black text-orange-300" : "text-gray-300"
+           }`}
+         >
+           {entry.gapToLeader}
+         </span>
+       </td>
+ 
+-      {/* Écart au suivant (caché sur mobile) */}
+-      <td className="hidden px-3 py-2.5 align-middle text-right md:table-cell">
+-        <span className="text-sm tabular-nums text-gray-400">
+-          {entry.gapToNext}
++      {/* Meilleur tour */}
++      <td className="px-2 py-2.5 align-middle text-right">
++        <span className="whitespace-nowrap font-mono text-sm tabular-nums text-purple-300">
++          {entry.bestLap}
+         </span>
+       </td>
+ 
+-      {/* Best Lap (caché sur tablette) */}
+-      <td className="hidden px-3 py-2.5 align-middle text-right lg:table-cell">
+-        <span className="font-mono text-sm tabular-nums text-purple-400">
+-          {entry.bestLap}
++      {/* Dernier tour */}
++      <td className="px-2 py-2.5 align-middle text-right">
++        <span className="whitespace-nowrap font-mono text-sm tabular-nums text-gray-300">
++          {entry.lastLap}
+         </span>
+       </td>
+ 
+-      {/* Secteurs (caché sauf large écran) */}
+-      <td className="hidden px-3 py-2.5 align-middle text-right xl:table-cell">
+-        <div className="flex items-center justify-end gap-2 font-mono text-xs tabular-nums text-gray-400">
+-          <span>{entry.sector1}</span>
+-          <span className="text-white/30">|</span>
+-          <span>{entry.sector2}</span>
+-          <span className="text-white/30">|</span>
+-          <span>{entry.sector3}</span>
+-        </div>
++      {/* Secteurs du dernier tour terminé */}
++      <td className="px-2 py-2.5 align-middle text-right">
++        <span className="font-mono text-xs tabular-nums text-cyan-300">{entry.sector1}</span>
++      </td>
++      <td className="px-2 py-2.5 align-middle text-right">
++        <span className="font-mono text-xs tabular-nums text-cyan-300">{entry.sector2}</span>
++      </td>
++      <td className="px-2 py-2.5 align-middle text-right">
++        <span className="font-mono text-xs tabular-nums text-cyan-300">{entry.sector3 ?? "—"}</span>
+       </td>
+ 
+-      {/* Carburant : valeur native, sans conversion d’unité */}
+-      <td className="hidden px-3 py-2.5 align-middle text-right 2xl:table-cell">
+-        <span className="font-mono text-xs tabular-nums text-gray-400">
+-          {entry.fuelFraction === null || entry.fuelFraction === undefined
+-            ? "—"
+-            : entry.fuelFraction.toFixed(3)}
++      {/* Vitesse maximale : aucune source agrégée prouvée */}
++      <td className="px-2 py-2.5 align-middle text-right">
++        <span className="font-mono text-xs tabular-nums text-gray-500" title="Vitesse maximale indisponible via le contrat natif">
++          —
+         </span>
+       </td>
+ 
+-      {/* Statut */}
+-      <td className="px-2 py-2.5 align-middle text-right sm:px-3">
+-        <div className="flex flex-wrap items-center justify-end gap-1">
++      {/* Pneus avant/arrière : aucun composé B404 prouvé */}
++      <td data-column="pneus" className="px-2 py-2.5 align-middle text-center">
++        <TelemetryUnavailable label="Composés pneus avant/arrière" />
++      </td>
++
++      {/* Carburant : fraction native 0..1 présentée visuellement en pourcentage */}
++      <td data-column="carburant" className="px-2 py-2.5 align-middle text-right">
++        <FuelMeter fuelFraction={entry.fuelFraction} />
++      </td>
++
++      {/* Usure AVG / AVD / ARG / ARD : absence conservée explicitement */}
++      {(["AVG", "AVD", "ARG", "ARD"] as const).map((corner) => (
++        <td key={corner} data-column={`usure-${corner}`} className="px-2 py-2.5 align-middle text-right">
++          <TelemetryUnavailable label={`Usure ${corner}`} />
++        </td>
++      ))}
++
++      {/* Statut réel du pilote, distinct de l’écart Leader */}
++      <td data-column="statut" className="px-2 py-2.5 align-middle text-right">
++        <div className="flex min-w-[8rem] flex-wrap items-center justify-end gap-1">
+           {entry.underYellow === true ? (
+-            <span className="inline-flex items-center gap-1 rounded-full bg-yellow-500/20 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-yellow-300">
+-              JAUNE
+-            </span>
+-          ) : null}
+-          {entry.inPit ? (
+-            <span className="inline-flex items-center gap-1 rounded-full bg-cyan-500/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-cyan-300">
+-              PIT
+-            </span>
+-          ) : entry.status === "dnf" ? (
+-            <span className="inline-flex items-center gap-1 rounded-full bg-red-500/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-red-400">
+-              DNF
+-            </span>
+-          ) : entry.status === "finished" ? (
+-            <span className="inline-flex items-center gap-1 rounded-full bg-blue-500/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-blue-400">
+-              FIN
++            <span className="inline-flex items-center rounded-full border border-slate-600/70 bg-slate-500/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-slate-300">
++              Sous drapeau
+             </span>
+           ) : null}
++          <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${status.className}`}>
++            {status.label}
++          </span>
+         </div>
+       </td>
+     </tr>
+   );
+ }
+ 
+-// ─── Statut de session (badge arrêts au stand) ────────────────────────
++// ─── Le statut détaillé reste porté par la ligne; aucune valeur n’est déduite du classement. ───
+diff --git a/app/_components/live-timing-standings.tsx b/app/_components/live-timing-standings.tsx
+index daaa0dc..b2f4058 100644
+--- a/app/_components/live-timing-standings.tsx
++++ b/app/_components/live-timing-standings.tsx
+@@ -42,13 +42,8 @@ function rankingSessionLabel(sessionName?: string, sessionPhase?: SessionPhase):
+ }
+ 
+ /**
+- * Tableau de classement complet — affiche la liste des pilotes
+- * avec leurs temps, écarts et secteurs.
+- *
+- * Features préparées pour les prochains sprints :
+- * - 🔄 Rafraîchissement automatique (placeholder)
+- * - 📊 Filtres / Tris (placeholder)
+- * - 📥 Export (placeholder)
++ * Tableau de classement complet — les informations absentes du DTO restent
++ * visibles comme « — » afin de ne jamais fabriquer une télémétrie.
+  */
+ export function StandingsTable({
+   standings,
+@@ -64,19 +59,18 @@ export function StandingsTable({
+             Aucune donnée de classement disponible
+           </p>
+           <p className="mt-2 text-sm text-gray-500">
+-            Le classement apparaîtra automatiquement lorsque la session
+-            sera active.
++            Le classement apparaîtra automatiquement lorsque la session sera active.
+           </p>
+         </div>
+       </section>
+     );
+   }
+ 
+-  const poleTime = standings.find((e) => e.position === 1)?.bestLap;
++  const poleTime = standings.find((entry) => entry.position === 1)?.bestLap;
+ 
+   return (
+     <section className="border-b border-white/10 bg-[#06101d]">
+-      <div className="mx-auto max-w-7xl px-6 py-8">
++      <div className="w-full max-w-none px-3 py-8 sm:px-4 lg:px-6">
+         {/* En-tête */}
+         <div className="mb-5 flex flex-wrap items-center justify-between gap-4">
+           <div>
+@@ -88,7 +82,7 @@ export function StandingsTable({
+             </h2>
+           </div>
+ 
+-          {/* Actions (placeholders pour futurs sprints) */}
++          {/* Contrôles conservés dans le style B404 */}
+           <div className="flex items-center gap-2">
+             <button
+               type="button"
+@@ -118,44 +112,61 @@ export function StandingsTable({
+           </div>
+         </div>
+ 
+-        {/* Meilleur tour */}
++        {/* Meilleur tour — indépendant de Dernier tour */}
+         {poleTime && (
+           <div className="mb-4 rounded-2xl border border-purple-400/15 bg-purple-500/5 px-4 py-2.5">
+             <p className="text-xs text-purple-300">
+               <span className="font-bold">Meilleur tour :</span>{" "}
+               <span className="font-mono font-bold">{poleTime}</span> —{" "}
+-              {standings.find((e) => e.position === 1)?.driverName}
++              {standings.find((entry) => entry.position === 1)?.driverName}
+             </p>
+           </div>
+         )}
+ 
+-        {/* Tableau responsive */}
++        {/* Tableau responsive : la largeur permet de consulter toutes les colonnes par défilement horizontal. */}
+         <div className="overflow-x-auto rounded-2xl border border-white/10">
+-          <table className="w-full min-w-[640px]">
+-            {/* En-têtes de colonnes */}
++          <table className="w-full min-w-[1800px]">
+             <thead>
+               <tr className="border-b border-white/10 bg-[#0b1728]">
+-                <Th className="sticky left-0 z-10 w-12 bg-[#0b1728] text-left">#</Th>
+-                <Th className="w-8 text-center">Départ</Th>
+-                <Th className="text-left">Pilote</Th>
+-                <Th className="hidden text-left lg:table-cell">Voiture</Th>
+-                <Th className="w-14 text-center">Tours</Th>
+-                <Th className="text-right">Écart</Th>
+-                <Th className="hidden text-right md:table-cell">Au suivant</Th>
+-                <Th className="hidden text-right lg:table-cell">Meilleur tour</Th>
+-                <Th className="hidden text-right xl:table-cell">Secteurs</Th>
+-                <Th className="hidden text-right 2xl:table-cell">Carburant</Th>
+-                <Th className="w-16 text-right">Statut</Th>
++                <Th rowSpan={2} className="sticky left-0 z-10 w-16 bg-[#0b1728] text-left">Pos.</Th>
++                <Th rowSpan={2} className="w-24 text-center">Évol.<span className="block text-[9px] tracking-normal">vs qualif.</span></Th>
++                <Th rowSpan={2} className="text-left">Pilote</Th>
++                <Th rowSpan={2} className="text-center">Classe</Th>
++                <Th rowSpan={2} className="text-left">Voiture</Th>
++                <Th rowSpan={2} className="text-center">Tours</Th>
++                <Th rowSpan={2} className="text-center">Arrêts</Th>
++                <Th rowSpan={2} className="text-right">Écart</Th>
++                <Th rowSpan={2} className="text-right">Meilleur<span className="block">tour</span></Th>
++                <Th rowSpan={2} className="text-right">Dernier<span className="block">tour</span></Th>
++                <th colSpan={3} className="px-2 py-2 text-center text-[10px] font-black uppercase tracking-[0.15em] text-cyan-300">
++                  Secteurs du dernier tour
++                </th>
++                <Th rowSpan={2} className="text-right">VMax<span className="block text-[9px] tracking-normal">km/h</span></Th>
++                <Th rowSpan={2} className="text-center">Pneus<span className="block text-[9px] tracking-normal">AV/AR</span></Th>
++                <Th rowSpan={2} className="text-right">Carburant</Th>
++                <th colSpan={4} className="px-2 py-2 text-center text-[10px] font-black uppercase tracking-[0.15em] text-cyan-300">
++                  Usure des 4 pneus
++                </th>
++                <Th rowSpan={2} className="text-right">Statut</Th>
++              </tr>
++              <tr className="border-b border-white/10 bg-[#0b1728]">
++                <Th className="text-right">S1</Th>
++                <Th className="text-right">S2</Th>
++                <Th className="text-right">S3</Th>
++                <Th className="text-right">AVG</Th>
++                <Th className="text-right">AVD</Th>
++                <Th className="text-right">ARG</Th>
++                <Th className="text-right">ARD</Th>
+               </tr>
+             </thead>
+ 
+-            {/* Corps */}
+             <tbody className="divide-y divide-white/[0.04]">
+               {standings.map((entry) => (
+                 <StandingRow
+                   key={`${entry.position}-${entry.driverName}`}
+                   entry={entry}
+                   isPole={entry.bestLap === poleTime}
++                  sessionPhase={sessionPhase}
+                 />
+               ))}
+             </tbody>
+@@ -171,7 +182,7 @@ export function StandingsTable({
+             <ChevronDown className="h-3 w-3 text-red-400" /> Perte
+           </span>
+           <span className="flex items-center gap-1">
+-            <Wrench className="h-3 w-3 text-yellow-400" /> Aux stands
++            <Wrench className="h-3 w-3 text-cyan-300" /> Aux stands
+           </span>
+           <span className="flex items-center gap-1">
+             <TriangleAlert className="h-3 w-3 text-red-400" /> Abandon
+@@ -182,12 +193,22 @@ export function StandingsTable({
+   );
+ }
+ 
+-// ─── Sous-composants ──────────────────────────────────────────────────
+-
+-function Th({ children, className }: { children?: React.ReactNode; className?: string }) {
++function Th({
++  children,
++  className,
++  rowSpan,
++  colSpan,
++}: {
++  children?: React.ReactNode;
++  className?: string;
++  rowSpan?: number;
++  colSpan?: number;
++}) {
+   return (
+     <th
+-      className={`px-2 py-3 text-[10px] font-black uppercase tracking-[0.15em] text-gray-500 sm:px-3 ${className ?? ""}`}
++      rowSpan={rowSpan}
++      colSpan={colSpan}
++      className={`px-1.5 py-2.5 text-[10px] font-black uppercase tracking-[0.15em] text-gray-500 sm:px-2 ${className ?? ""}`}
+     >
+       {children}
+     </th>
+diff --git a/app/_components/live-timing-track-line.tsx b/app/_components/live-timing-track-line.tsx
+index a1f3ef1..f223155 100644
+--- a/app/_components/live-timing-track-line.tsx
++++ b/app/_components/live-timing-track-line.tsx
+@@ -1,8 +1,20 @@
+ "use client";
+ 
+-import { useEffect, useMemo, useRef, useState } from "react";
++import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+ import { Gauge, Map as MapIcon } from "lucide-react";
+ import type { Flag, StandingEntry } from "../_types/live-timing";
++import { publicLiveTimingApiUrl } from "../_services/public-live-timing-provider";
++import { getMarkerPalette } from "../_services/live-timing-visual-theme";
++import {
++  getAnimatedLapDistance,
++  MAX_MARKER_ANIMATION_DISTANCE,
++  retargetMarkerMotion,
++  VISUAL_MARKER_ANIMATION_DURATION_MS,
++} from "../_services/live-timing-track-motion";
++import type {
++  MarkerMotionInput,
++  MarkerMotionPlan,
++} from "../_services/live-timing-track-motion";
+ 
+ interface TrackGeometryPoint {
+   x: number;
+@@ -10,15 +22,24 @@ interface TrackGeometryPoint {
+   distance: number;
+ }
+ 
++interface TrackSectorBounds {
++  sector: number;
++  startDistance: number;
++  endDistance: number;
++}
++
+ interface TrackGeometry {
+   technicalId: string;
+   lapLength: number;
+   viewBox: string;
+   points: TrackGeometryPoint[];
++  /** Explicit native/AIW sector distances only; never inferred from lap thirds. */
++  sectorBounds: TrackSectorBounds[];
+ }
+ 
+ interface LiveTimingTrackLineProps {
+   sourceId: string;
++  sessionKey: string;
+   trackTechnicalId: string | null;
+   lapDistance: number | null;
+   trackLength: number | null;
+@@ -42,6 +63,55 @@ function isRecord(value: unknown): value is Record<string, unknown> {
+   return typeof value === "object" && value !== null;
+ }
+ 
++function parseSectorBounds(value: unknown, lapLength: number): TrackSectorBounds[] {
++  if (!Array.isArray(value)) return [];
++  return value
++    .filter(isRecord)
++    .map((candidate) => ({
++      sector: Number(candidate.sector),
++      startDistance: Number(candidate.startDistance),
++      endDistance: Number(candidate.endDistance),
++    }))
++    .filter(
++      (candidate) => Number.isInteger(candidate.sector)
++        && candidate.sector >= 1
++        && candidate.sector <= 3
++        && Number.isFinite(candidate.startDistance)
++        && Number.isFinite(candidate.endDistance)
++        && candidate.startDistance >= 0
++        && candidate.endDistance > candidate.startDistance
++        && candidate.endDistance <= lapLength,
++    )
++    .sort((first, second) => first.sector - second.sector);
++}
++
++function deriveSector3Bounds(
++  sectorBounds: TrackSectorBounds[],
++  lapLength: number,
++): TrackSectorBounds[] {
++  if (sectorBounds.some((bounds) => bounds.sector === 3)) return sectorBounds;
++  const sector1 = sectorBounds.find((bounds) => bounds.sector === 1);
++  const sector2 = sectorBounds.find((bounds) => bounds.sector === 2);
++  if (
++    !sector1
++    || !sector2
++    || sector1.endDistance > sector2.startDistance
++    || sector2.endDistance >= lapLength
++  ) {
++    return sectorBounds;
++  }
++
++  // S3 is the verified complement from the explicit end of S2 to the AIW lap line.
++  return [
++    ...sectorBounds,
++    {
++      sector: 3,
++      startDistance: sector2.endDistance,
++      endDistance: lapLength,
++    },
++  ].sort((first, second) => first.sector - second.sector);
++}
++
+ function parseGeometryPayload(payload: unknown, technicalId: string): TrackGeometry | null {
+   if (!isRecord(payload) || payload.success !== true || !isRecord(payload.geometry)) return null;
+   const candidate = payload.geometry;
+@@ -62,7 +132,14 @@ function parseGeometryPayload(payload: unknown, technicalId: string): TrackGeome
+         && Number.isFinite(point.distance),
+     );
+   if (points.length < 3) return null;
+-  return { technicalId, lapLength, viewBox: candidate.viewBox, points };
++  const sectorBounds = parseSectorBounds(candidate.sectorBounds, lapLength);
++  return {
++    technicalId,
++    lapLength,
++    viewBox: candidate.viewBox,
++    points,
++    sectorBounds: deriveSector3Bounds(sectorBounds, lapLength),
++  };
+ }
+ 
+ function geometryCacheStorageKey(sourceId: string, technicalId: string): string {
+@@ -108,7 +185,7 @@ function refreshTrackGeometry(sourceId: string, technicalId: string): Promise<Tr
+   const inFlight = geometryCache.get(cacheKey);
+   if (inFlight) return inFlight;
+ 
+-  const request = fetch(`/api/public/live-timing/${encodeURIComponent(sourceId)}/track-geometry`, {
++  const request = fetch(publicLiveTimingApiUrl(`/${encodeURIComponent(sourceId)}/track-geometry`), {
+     cache: "no-store",
+     headers: { Accept: "application/json" },
+   })
+@@ -235,6 +312,11 @@ const DEFAULT_VIEWPORT_ASPECT_RATIO = 3;
+ interface DisplayGeometryFit {
+   viewBox: string;
+   transform: string;
++  minX: number;
++  minY: number;
++  width: number;
++  height: number;
++  badgeBandHeight: number;
+ }
+ 
+ interface GeometryMarkerPlacement {
+@@ -242,16 +324,80 @@ interface GeometryMarkerPlacement {
+   point: { x: number; y: number };
+ }
+ 
+-function isActiveOnTrack(entry: StandingEntry): boolean {
+-  return entry.status === "running" && !entry.inPit;
++interface MarkerAnimationState {
++  input: MarkerMotionInput;
++  plan: MarkerMotionPlan;
++  startedAt: number;
++}
++
++interface SectorBadgePlacement {
++  x: number;
++  y: number;
++}
++
++const SECTOR_BADGE_BAND_HEIGHT = 48;
++const SECTOR_BADGE_WIDTH = 84;
++const SECTOR_BADGE_HEIGHT = 24;
++
++function getMarkerIdentity(entry: StandingEntry): string {
++  const participantId = entry.participantId?.trim();
++  return participantId ? `participant:${participantId}` : `driver:${entry.driverName}`;
+ }
+ 
+-function parseViewBox(viewBox: string): { x: number; y: number; width: number; height: number } | null {
+-  const values = viewBox.trim().split(/\s+/).map(Number);
+-  if (values.length !== 4 || values.some((value) => !Number.isFinite(value))) return null;
+-  const [x, y, width, height] = values;
+-  if (width <= 0 || height <= 0) return null;
+-  return { x, y, width, height };
++function getMarkerMotionInput(entry: StandingEntry): MarkerMotionInput | null {
++  if (entry.lapDistance === null || entry.lapDistance === undefined || !Number.isFinite(entry.lapDistance)) {
++    return null;
++  }
++  return {
++    lapDistance: entry.lapDistance,
++    inPit: entry.inPit === true,
++    status: entry.status,
++  };
++}
++
++function getSectorAnchor(
++  geometry: TrackGeometry,
++  sector: number,
++): { x: number; y: number } | null {
++  const bounds = geometry.sectorBounds.find((candidate) => candidate.sector === sector);
++  if (!bounds) return null;
++  return interpolateGeometryPoint(
++    geometry,
++    bounds.startDistance + (bounds.endDistance - bounds.startDistance) / 2,
++  );
++}
++
++function getSectorPath(geometry: TrackGeometry, sector: number): string | null {
++  const bounds = geometry.sectorBounds.find((candidate) => candidate.sector === sector);
++  if (!bounds) return null;
++  const start = interpolateGeometryPoint(geometry, bounds.startDistance);
++  const end = interpolateGeometryPoint(geometry, bounds.endDistance);
++  if (!start || !end) return null;
++  const points = [
++    start,
++    ...geometry.points
++      .filter((point) => point.distance > bounds.startDistance && point.distance < bounds.endDistance)
++      .map((point) => ({ x: point.x, y: point.y })),
++    end,
++  ];
++  return points.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`).join(" ");
++}
++
++function getSectorBadgePlacement(
++  fit: DisplayGeometryFit,
++  index: number,
++  count: number,
++): SectorBadgePlacement {
++  const columns = Math.max(1, Math.min(count, 3));
++  const slotWidth = fit.width / columns;
++  return {
++    x: fit.minX + slotWidth * (index % columns) + slotWidth / 2,
++    y: fit.minY + fit.badgeBandHeight / 2,
++  };
++}
++
++function isActiveOnTrack(entry: StandingEntry): boolean {
++  return entry.status === "running" && !entry.inPit;
+ }
+ 
+ function rotateDisplayPoint(point: { x: number; y: number }, rotation: number) {
+@@ -280,12 +426,23 @@ function getGeometryMarkerPlacements(
+ function fitGeometryForDisplay(
+   geometry: TrackGeometry,
+   viewportAspectRatio: number,
++  yellowBadgeCount: number,
+ ): DisplayGeometryFit {
++  const badgeBandHeight = yellowBadgeCount > 0 ? SECTOR_BADGE_BAND_HEIGHT : 0;
+   const validPoints = geometry.points.filter(
+     (point) => Number.isFinite(point.x) && Number.isFinite(point.y),
+   );
+   if (validPoints.length < 3 || !Number.isFinite(viewportAspectRatio) || viewportAspectRatio <= 0) {
+-    return { viewBox: geometry.viewBox, transform: "" };
++    const [minX, minY, width, height] = geometry.viewBox.split(/\s+/).map(Number);
++    return {
++      viewBox: geometry.viewBox,
++      transform: "",
++      minX: Number.isFinite(minX) ? minX : 0,
++      minY: Number.isFinite(minY) ? minY : 0,
++      width: Number.isFinite(width) ? width : 1,
++      height: Number.isFinite(height) ? height : 1,
++      badgeBandHeight,
++    };
+   }
+ 
+   const candidates = [0, 90].map((rotation) => {
+@@ -295,13 +452,14 @@ function fitGeometryForDisplay(
+     const minY = Math.min(...transformed.map((point) => point.y));
+     const maxY = Math.max(...transformed.map((point) => point.y));
+     const width = maxX - minX + MARKER_SAFE_MARGIN * 2;
+-    const height = maxY - minY + MARKER_SAFE_MARGIN * 2;
++    const height = maxY - minY + MARKER_SAFE_MARGIN * 2 + badgeBandHeight;
+     return {
+       rotation,
+       minX: minX - MARKER_SAFE_MARGIN,
+-      minY: minY - MARKER_SAFE_MARGIN,
++      minY: minY - MARKER_SAFE_MARGIN - badgeBandHeight,
+       width,
+       height,
++      badgeBandHeight,
+       scale: Math.min(viewportAspectRatio / width, 1 / height),
+     };
+   });
+@@ -312,6 +470,11 @@ function fitGeometryForDisplay(
+   return {
+     viewBox: `${best.minX} ${best.minY} ${best.width} ${best.height}`,
+     transform: best.rotation === 90 ? "rotate(90)" : "",
++    minX: best.minX,
++    minY: best.minY,
++    width: best.width,
++    height: best.height,
++    badgeBandHeight: best.badgeBandHeight,
+   };
+ }
+ 
+@@ -327,19 +490,18 @@ function fallbackLine(markers: StandingEntry[]) {
+         const left = `${(entry.lapProgress ?? 0) * 100}%`;
+         const marker = String(entry.position);
+         const carNumber = entry.carNumber?.trim();
+-        const fallbackMarkerTone = entry.underYellow === true
+-          ? "border-yellow-200 bg-yellow-400 shadow-yellow-500/25"
+-          : entry.inPit
+-            ? "border-cyan-200 bg-cyan-500 shadow-cyan-500/25"
+-            : "border-orange-200 bg-orange-500 shadow-orange-500/25";
++        const markerPalette = getMarkerPalette(entry.carClass, entry.inPit === true);
+         return (
+           <div
+-            key={`${entry.position}-${entry.driverName}`}
++            key={getMarkerIdentity(entry)}
+             className="group absolute top-1/2 -translate-x-1/2 -translate-y-1/2"
+             style={{ left }}
+             title={`Position ${marker} — ${entry.driverName}${carNumber ? ` — voiture #${carNumber}` : ""}`}
+           >
+-            <span className={`flex h-8 min-w-8 items-center justify-center rounded-full border-2 px-2 text-xs font-black text-[#06101d] shadow-lg ${fallbackMarkerTone} transition group-hover:scale-110`}>
++            <span
++              className="flex h-8 min-w-8 items-center justify-center rounded-full border-2 px-2 text-xs font-black text-[#06101d] shadow-lg transition group-hover:scale-110"
++              style={{ backgroundColor: markerPalette.fill, borderColor: markerPalette.stroke }}
++            >
+               {marker}
+             </span>
+             <span className="pointer-events-none absolute left-1/2 top-10 hidden -translate-x-1/2 whitespace-nowrap rounded bg-[#06101d] px-2 py-1 text-[10px] text-white shadow-xl group-hover:block">
+@@ -355,6 +517,7 @@ function fallbackLine(markers: StandingEntry[]) {
+ /** Vue Live générique : tracé AIW mis en cache, marqueurs interpolés par lapDistance. */
+ export function LiveTimingTrackLine({
+   sourceId,
++  sessionKey,
+   trackTechnicalId,
+   lapDistance,
+   trackLength,
+@@ -402,10 +565,6 @@ export function LiveTimingTrackLine({
+     return () => observer.disconnect();
+   }, [geometry]);
+ 
+-  const fittedGeometry = useMemo(
+-    () => geometry ? fitGeometryForDisplay(geometry, viewportAspectRatio) : null,
+-    [geometry, viewportAspectRatio],
+-  );
+   const yellowSectors = useMemo(
+     () => [...new Set(
+       flags
+@@ -414,15 +573,18 @@ export function LiveTimingTrackLine({
+     )].sort((first, second) => first - second),
+     [flags],
+   );
+-  const yellowFlagLabels = yellowSectors.length > 0
+-    ? yellowSectors.map((sector) => `S${sector}`)
+-    : flags.some((flag) => flag.type === "yellow" && flag.sector === 0)
+-      ? ["JAUNE"]
+-      : [];
+-  const displayViewBox = useMemo(
+-    () => geometry ? parseViewBox(fittedGeometry?.viewBox ?? geometry.viewBox) : null,
+-    [fittedGeometry, geometry],
++  const fittedGeometry = useMemo(
++    () => geometry ? fitGeometryForDisplay(geometry, viewportAspectRatio, yellowSectors.length) : null,
++    [geometry, viewportAspectRatio, yellowSectors.length],
+   );
++  const missingYellowSectorBounds = yellowSectors.filter(
++    (sector) => !geometry?.sectorBounds.some((bounds) => bounds.sector === sector),
++  );
++  const yellowFlagNotice = missingYellowSectorBounds.length > 0
++    ? `Drapeau jaune — secteurs source ${missingYellowSectorBounds.map((sector) => `S${sector}`).join(", ")}; bornes sectorielles AIW non fournies : portion du tracé non colorée.`
++    : flags.some((flag) => flag.type === "yellow" && flag.sector === 0)
++      ? "Drapeau jaune général — secteur AIW non localisable depuis la source."
++      : null;
+ 
+   const geometryMarkers = useMemo(
+     () => geometry
+@@ -437,6 +599,71 @@ export function LiveTimingTrackLine({
+       : [],
+     [geometry, standings],
+   );
++  const markerAnimationsRef = useRef(new Map<string, MarkerAnimationState>());
++  const markerElementsRef = useRef(new Map<string, SVGGElement>());
++  const previousSessionKeyRef = useRef(sessionKey);
++
++  useLayoutEffect(() => {
++    const animations = markerAnimationsRef.current;
++    if (previousSessionKeyRef.current !== sessionKey) {
++      animations.clear();
++      previousSessionKeyRef.current = sessionKey;
++    }
++    if (!geometry || !sessionKey) {
++      animations.clear();
++      return undefined;
++    }
++
++    let cancelled = false;
++    let frameId: number | null = null;
++    const now = performance.now();
++    const visibleMarkerIds = new Set<string>();
++    const nextEntries = standings.filter((entry) => getMarkerMotionInput(entry) !== null);
++
++    for (const entry of nextEntries) {
++      const input = getMarkerMotionInput(entry);
++      if (!input) continue;
++      const identity = getMarkerIdentity(entry);
++      visibleMarkerIds.add(identity);
++      const previous = animations.get(identity);
++      animations.set(identity, {
++        input,
++        plan: retargetMarkerMotion(previous ?? null, input, geometry.lapLength, now),
++        startedAt: now,
++      });
++    }
++
++    for (const identity of animations.keys()) {
++      if (!visibleMarkerIds.has(identity)) animations.delete(identity);
++    }
++
++    const renderMarker = (identity: string, state: MarkerAnimationState, timestamp: number) => {
++      const element = markerElementsRef.current.get(identity);
++      if (!element) return;
++      const point = interpolateGeometryPoint(
++        geometry,
++        getAnimatedLapDistance(state.plan, timestamp - state.startedAt),
++      );
++      if (!point) return;
++      element.setAttribute("transform", `translate(${point.x} ${point.y})`);
++      element.dataset.markerMotion = state.plan.mode;
++    };
++
++    const animate = (timestamp: number) => {
++      if (cancelled) return;
++      for (const [identity, state] of animations) renderMarker(identity, state, timestamp);
++      const hasActiveAnimation = [...animations.values()].some(
++        (state) => state.plan.durationMs > 0 && timestamp - state.startedAt < state.plan.durationMs,
++      );
++      frameId = hasActiveAnimation ? requestAnimationFrame(animate) : null;
++    };
++    animate(now);
++
++    return () => {
++      cancelled = true;
++      if (frameId !== null) cancelAnimationFrame(frameId);
++    };
++  }, [geometry, sessionKey, standings]);
+ 
+   useEffect(() => {
+     let cancelled = false;
+@@ -494,7 +721,7 @@ export function LiveTimingTrackLine({
+                 Progression Live
+               </p>
+               <h2 className="mt-1 text-2xl font-black text-white">
+-                Position des voitures sur le tour
++                Positions en piste
+               </h2>
+             </div>
+           </div>
+@@ -526,6 +753,36 @@ export function LiveTimingTrackLine({
+                   aria-label={`Tracé AIW du layout ${geometry.technicalId}`}
+                   preserveAspectRatio="xMidYMid meet"
+                 >
++                  {yellowSectors.map((sector) => {
++                    const anchor = getSectorAnchor(geometry, sector);
++                    if (!anchor) return null;
++                    const displayRotation = fittedGeometry?.transform === "rotate(90)" ? 90 : 0;
++                    const displayAnchor = rotateDisplayPoint(anchor, displayRotation);
++                    const badgePlacement = fittedGeometry
++                      ? getSectorBadgePlacement(
++                        fittedGeometry,
++                        yellowSectors.indexOf(sector),
++                        yellowSectors.length,
++                      )
++                      : null;
++                    if (!badgePlacement) return null;
++                    return (
++                      <line
++                        key={`sector-flag-leader-${sector}`}
++                        data-sector-flag-leader="true"
++                        x1={displayAnchor.x}
++                        y1={displayAnchor.y}
++                        x2={badgePlacement.x}
++                        y2={badgePlacement.y + SECTOR_BADGE_HEIGHT / 2}
++                        stroke="#facc15"
++                        strokeOpacity="0.9"
++                        strokeDasharray="4 4"
++                        strokeLinecap="round"
++                        strokeWidth="2"
++                        vectorEffect="non-scaling-stroke"
++                      />
++                    );
++                  })}
+                   <g transform={fittedGeometry?.transform}>
+                   <path
+                     d={`${trackPath} Z`}
+@@ -536,6 +793,23 @@ export function LiveTimingTrackLine({
+                     strokeWidth="18"
+                     vectorEffect="non-scaling-stroke"
+                   />
++                  {yellowSectors.map((sector) => {
++                    const sectorPath = getSectorPath(geometry, sector);
++                    return sectorPath ? (
++                      <path
++                        key={`sector-flag-track-${sector}`}
++                        data-sector-flag-track="true"
++                        d={sectorPath}
++                        fill="none"
++                        stroke="#facc15"
++                        strokeOpacity="0.9"
++                        strokeLinecap="round"
++                        strokeLinejoin="round"
++                        strokeWidth="22"
++                        vectorEffect="non-scaling-stroke"
++                      />
++                    ) : null;
++                  })}
+                   {startFinishLine ? (
+                     <line
+                       data-start-finish-line="true"
+@@ -567,15 +841,18 @@ export function LiveTimingTrackLine({
+                   {geometryMarkers.map(({ entry, point }) => {
+                     const marker = String(entry.position);
+                     const carNumber = entry.carNumber?.trim();
+-                    const markerFill = entry.underYellow === true
+-                      ? "#facc15"
+-                      : entry.inPit ? "#06b6d4" : "#f97316";
+-                    const markerStroke = entry.underYellow === true
+-                      ? "#fef08a"
+-                      : entry.inPit ? "#a5f3fc" : "#fed7aa";
++                    const markerPalette = getMarkerPalette(entry.carClass, entry.inPit === true);
++                    const identity = getMarkerIdentity(entry);
+                     return (
+                       <g
+-                        key={`${entry.position}-${entry.driverName}`}
++                        key={identity}
++                        ref={(element) => {
++                          if (element) markerElementsRef.current.set(identity, element);
++                          else markerElementsRef.current.delete(identity);
++                        }}
++                        data-marker-motion="initial"
++                        data-marker-animation-duration={VISUAL_MARKER_ANIMATION_DURATION_MS}
++                        data-marker-animation-max-distance={MAX_MARKER_ANIMATION_DISTANCE}
+                         transform={`translate(${point.x} ${point.y})`}
+                         aria-label={`Position ${marker} — ${entry.driverName}`}
+                       >
+@@ -586,8 +863,8 @@ export function LiveTimingTrackLine({
+                         >
+                           <circle
+                             r={MARKER_LABEL_RADIUS}
+-                            fill={markerFill}
+-                            stroke={markerStroke}
++                            fill={markerPalette.fill}
++                            stroke={markerPalette.stroke}
+                             strokeWidth={MARKER_LABEL_STROKE_WIDTH}
+                           />
+                           <text
+@@ -606,60 +883,44 @@ export function LiveTimingTrackLine({
+                     );
+                   })}
+                   </g>
+-                  {yellowFlagLabels.length > 0 && displayViewBox ? (
+-                    <g
+-                      data-sector-flag-overlay="true"
+-                      aria-label={`Drapeau jaune ${yellowFlagLabels.join(", ")}`}
+-                      pointerEvents="none"
+-                    >
+-                      {yellowFlagLabels.map((label, index) => {
+-                        const width = label === "JAUNE" ? 64 : 42;
+-                        const gap = 8;
+-                        const totalWidth = yellowFlagLabels.reduce(
+-                          (total, current, currentIndex) => total
+-                            + (currentIndex > 0 ? gap : 0)
+-                            + (current === "JAUNE" ? 64 : 42),
+-                          0,
+-                        );
+-                        const offset = yellowFlagLabels
+-                          .slice(0, index)
+-                          .reduce((total, current) => total + (current === "JAUNE" ? 64 : 42) + gap, 0);
+-                        const x = displayViewBox.x
+-                          + (displayViewBox.width - totalWidth) / 2
+-                          + offset;
+-                        const y = displayViewBox.y + displayViewBox.height / 2 - 14;
+-                        return (
+-                          <g
+-                            key={label}
+-                            data-sector-flag-marker={label}
+-                            aria-label={`Drapeau jaune ${label}`}
+-                            transform={`translate(${x} ${y})`}
+-                          >
+-                            <rect
+-                              width={width}
+-                              height="28"
+-                              rx="14"
+-                              fill="#facc15"
+-                              fillOpacity="0.96"
+-                              stroke="#fef08a"
+-                              strokeWidth="2"
+-                            />
+-                            <text
+-                              x={width / 2}
+-                              y="14"
+-                              dominantBaseline="middle"
+-                              textAnchor="middle"
+-                              fill="#422006"
+-                              fontSize="11"
+-                              fontWeight="900"
+-                            >
+-                              {label}
+-                            </text>
+-                          </g>
+-                        );
+-                      })}
+-                    </g>
+-                  ) : null}
++                  {yellowSectors.map((sector, index) => {
++                    const badgePlacement = fittedGeometry
++                      ? getSectorBadgePlacement(fittedGeometry, index, yellowSectors.length)
++                      : null;
++                    if (!badgePlacement) return null;
++                    return (
++                      <g
++                        key={`sector-flag-badge-${sector}`}
++                        data-sector-flag-badge="true"
++                        className="pointer-events-none"
++                        transform={`translate(${badgePlacement.x} ${badgePlacement.y})`}
++                      >
++                        <rect
++                          x={-SECTOR_BADGE_WIDTH / 2}
++                          y={-SECTOR_BADGE_HEIGHT / 2}
++                          width={SECTOR_BADGE_WIDTH}
++                          height={SECTOR_BADGE_HEIGHT}
++                          rx="8"
++                          fill="#713f12"
++                          fillOpacity="0.96"
++                          stroke="#facc15"
++                          strokeWidth="2"
++                          vectorEffect="non-scaling-stroke"
++                        />
++                        <text
++                          x="0"
++                          y="1"
++                          dominantBaseline="middle"
++                          textAnchor="middle"
++                          fill="#fef08a"
++                          fontSize="11"
++                          fontWeight="900"
++                        >
++                          ⚠ S{sector}
++                        </text>
++                      </g>
++                    );
++                  })}
+                 </svg>
+               </div>
+             ) : (
+@@ -680,6 +941,14 @@ export function LiveTimingTrackLine({
+                 Tracé AIW : {geometry ? geometry.technicalId : "indisponible"}
+               </span>
+             </div>
++            {yellowFlagNotice ? (
++              <p
++                data-sector-flag-notice="true"
++                className="mt-3 rounded-lg border border-yellow-300/30 bg-yellow-300/10 px-3 py-2 text-xs text-yellow-100"
++              >
++                {yellowFlagNotice}
++              </p>
++            ) : null}
+           </div>
+         )}
+       </div>
+diff --git a/app/_services/public-live-timing-provider.ts b/app/_services/public-live-timing-provider.ts
+index 3445846..6d1cae2 100644
+--- a/app/_services/public-live-timing-provider.ts
++++ b/app/_services/public-live-timing-provider.ts
+@@ -17,6 +17,11 @@ const API_BASE_URL = (process.env.NEXT_PUBLIC_LIVE_TIMING_API_URL ?? "").replace
+ const API_PATH = `${API_BASE_URL}/api/public/live-timing`;
+ const FETCH_TIMEOUT = 8000;
+ 
++export function publicLiveTimingApiUrl(path: string): string {
++  const suffix = path.startsWith("/") ? path : `/${path}`;
++  return `${API_PATH}${suffix}`;
++}
++
+ interface PublicApiResponse {
+   success?: boolean;
+   data?: LiveTimingData;
+@@ -59,7 +64,7 @@ function toPublicError(code: string | undefined): string {
+ }
+ 
+ export async function fetchLiveTimingSources(): Promise<LiveTimingSourceOption[]> {
+-  const response = await window.fetch(`${API_PATH}/sources`, {
++  const response = await window.fetch(publicLiveTimingApiUrl("/sources"), {
+     method: "GET",
+     headers: { Accept: "application/json" },
+     cache: "no-store",
+@@ -125,7 +130,7 @@ export class PublicLiveTimingProvider implements IDataProvider {
+     const timeoutId = window.setTimeout(() => controller.abort(), FETCH_TIMEOUT);
+ 
+     try {
+-      const response = await window.fetch(`${API_PATH}/${this.sourceId}`, {
++      const response = await window.fetch(publicLiveTimingApiUrl(`/${this.sourceId}`), {
+         method: "GET",
+         headers: { Accept: "application/json" },
+         cache: "no-store",
+@@ -161,7 +166,7 @@ export class PublicLiveTimingProvider implements IDataProvider {
+     onSnapshot: (result: ProviderResult) => void,
+     onStatus: (status: { error: string; sourceStatus?: string }) => void,
+   ): () => void {
+-    const eventSource = new EventSource(`${API_PATH}/${this.sourceId}/stream`);
++    const eventSource = new EventSource(publicLiveTimingApiUrl(`/${this.sourceId}/stream`));
+ 
+     const handleSnapshot = (event: Event) => {
+       try {
+diff --git a/app/_types/live-timing.ts b/app/_types/live-timing.ts
+index 1effeee..6f5a331 100644
+--- a/app/_types/live-timing.ts
++++ b/app/_types/live-timing.ts
+@@ -90,7 +90,7 @@ export interface StandingEntry {
+   team: string;
+   car: string;
+   carNumber?: string;
+-  carClass: CarCategory;
++  carClass: CarCategory | null;
+   laps: number;
+   gapToLeader: string;
+   gapToNext: string;
+@@ -100,6 +100,7 @@ export interface StandingEntry {
+   nextParticipantId?: string | null;
+   bestLap: string;
+   lastLap: string;
++  /** Secteurs du dernier tour; S3 est le résidu contrôlé lorsque le dernier tour et S1/S2 sont cohérents. */
+   sector1: string;
+   sector2: string;
+   sector3: string | null;
+@@ -109,7 +110,7 @@ export interface StandingEntry {
+   status: DriverStatus;
+   pitStops: number;
+   isPole?: boolean;
+-  /** Valeur native fuelFraction ; aucune conversion en litres ou en pourcentage. */
++  /** Valeur native fuelFraction (fraction 0..1); conversion visuelle en % autorisée. */
+   fuelFraction?: number | null;
+   /** Position longitudinale native, en mètres lorsque fournie. */
+   lapDistance?: number | null;
+diff --git a/server/live-timing-api.mjs b/server/live-timing-api.mjs
+index b715b82..07a4721 100644
+--- a/server/live-timing-api.mjs
++++ b/server/live-timing-api.mjs
+@@ -261,6 +261,42 @@ function mapStatus(vehicle) {
+   return "running";
+ }
+ 
++/**
++ * rFactor 2 exposes lastSectorTime1 and lastSectorTime2 as cumulative lap
++ * endpoints. Convert those endpoints to individual sector durations only when
++ * the completed-lap bounds are coherent; otherwise keep the affected value
++ * unavailable instead of displaying a negative or cumulative duration.
++ */
++function deriveLastSectorTimes(vehicle) {
++  const lastLapTime = finiteNumber(vehicle.lastLapTime);
++  const sector1End = finiteNumber(vehicle.lastSectorTime1);
++  const sector2End = finiteNumber(vehicle.lastSectorTime2);
++  const lapsCompleted = finiteNumber(vehicle.lapsCompleted);
++  const hasLastLap = lastLapTime !== null && lastLapTime > 0;
++  const hasCompletedLap = hasLastLap && lapsCompleted !== null && lapsCompleted >= 1;
++  const hasUsableSector1End = sector1End !== null && sector1End > 0;
++  const sector1 = hasLastLap && hasUsableSector1End && sector1End < lastLapTime
++    ? sector1End
++    : null;
++  const hasCoherentSector2 =
++    sector1 !== null
++    && sector2End !== null
++    && sector2End > sector1
++    && sector2End < lastLapTime;
++  const sector2 = hasCoherentSector2 ? sector2End - sector1 : null;
++  const hasCoherentSector2End =
++    sector2End !== null
++    && sector2End > 0
++    && hasLastLap
++    && sector2End < lastLapTime
++    && (!hasUsableSector1End || sector2End > sector1End);
++  const sector3 = hasCompletedLap && hasCoherentSector2End
++    ? lastLapTime - sector2End
++    : null;
++
++  return { sector1, sector2, sector3 };
++}
++
+ function mapWeather(session) {
+   const rain = finiteNumber(session.raining);
+   const clouds = finiteNumber(session.darkCloud);
+@@ -488,23 +524,26 @@ function buildStandings(vehicles, trackDistance) {
+ 
+   const mapped = valid.map((vehicle) => {
+     const position = finiteNumber(vehicle.position) ?? 0;
+-    const qualification = finiteNumber(vehicle.qualification) ?? position;
++    const qualification = finiteNumber(vehicle.qualification);
+     const lapDistance = finiteNumber(vehicle.lapDistance);
+     const lapProgress =
+       trackDistance !== null && trackDistance > 0 && lapDistance !== null
+         ? Math.max(0, Math.min(1, lapDistance / trackDistance))
+         : null;
+-    const startingPosition = qualification > 0 ? qualification : position;
++    const startingPosition = qualification !== null && qualification > 0
++      ? qualification
++      : null;
++    const lastSectorTimes = deriveLastSectorTimes(vehicle);
+     return {
+       position,
+       participantId: publicParticipantId(vehicle),
+       startingPosition,
+-      prevPosition: startingPosition,
++      prevPosition: startingPosition ?? position,
+       driverName: publicText(vehicle.driverName, "Pilote"),
+       team: publicText(vehicle.fullTeamName, ""),
+       car: publicText(vehicle.vehicleName, "Inconnue"),
+       carNumber: publicText(vehicle.carNumber, ""),
+-      carClass: publicText(vehicle.carClass, "Inconnue"),
++      carClass: publicText(vehicle.carClass, "") || null,
+       laps: finiteNumber(vehicle.lapsCompleted) ?? 0,
+       gapToLeader: formatGap(
+         vehicle.timeBehindLeader,
+@@ -520,9 +559,9 @@ function buildStandings(vehicles, trackDistance) {
+       nextParticipantId: null,
+       bestLap: formatLapTime(vehicle.bestLapTime),
+       lastLap: formatLapTime(vehicle.lastLapTime),
+-      sector1: formatLapTime(vehicle.bestSectorTime1),
+-      sector2: formatLapTime(vehicle.bestSectorTime2),
+-      sector3: null,
++      sector1: formatLapTime(lastSectorTimes.sector1),
++      sector2: formatLapTime(lastSectorTimes.sector2),
++      sector3: lastSectorTimes.sector3 === null ? null : formatLapTime(lastSectorTimes.sector3),
+       inPit: vehicle.pitting === true || vehicle.pitState === "STOPPED",
+       underYellow:
+         typeof vehicle.underYellow === "boolean"
+@@ -566,6 +605,8 @@ function buildData(
+   weatherClientStatus,
+   canonicalTrackLength,
+   trackTechnicalId,
++  serverStatus = "online",
++  standingsAvailable = true,
+ ) {
+   const sessionCode = publicText(session.session, "—");
+   const trackDistance = finiteNumber(session.lapDistance);
+@@ -598,20 +639,22 @@ function buildData(
+       circuit: publicText(session.trackName) || selectionTrackName(selection) || "Inconnu",
+       category,
+       weather: mapWeather(session),
+-      driversCount: standings.length,
++      driversCount: standingsAvailable ? standings.length : null,
+       maxDrivers: finiteNumber(session.maxPlayers),
+       currentSession: sessionLabel(sessionCode),
+       timeRemaining:
+         sessionTimeRemaining === null ? "—" : formatRFactorDuration(sessionTimeRemaining),
+       totalSessionTime:
+         endEventTime === null ? "—" : formatRFactorDuration(Math.max(0, endEventTime)),
+-      lapsCompleted: standings.reduce((max, entry) => Math.max(max, entry.laps), 0),
++      lapsCompleted: standingsAvailable
++        ? standings.reduce((max, entry) => Math.max(max, entry.laps), 0)
++        : null,
+       totalLaps: maxLaps === INT32_MAX ? null : maxLaps,
+       trackLength: canonicalTrackLength?.meters ?? null,
+       trackLengthSource: canonicalTrackLength?.source ?? null,
+       trackTechnicalId: trackTechnicalId ?? canonicalTrackLength?.technicalId ?? null,
+       lapDistance: trackDistance,
+-      status: "online",
++      status: serverStatus,
+     },
+     session: {
+       phase: sessionPhase(sessionCode),
+@@ -650,13 +693,132 @@ async function requestJson(url, { fetchImpl, timeoutMs }) {
+     } catch {
+       return { ok: false, status: response.status, parseError: true };
+     }
+-  } catch {
+-    return { ok: false, status: 0 };
++  } catch (error) {
++    const isTimeout = controller.signal.aborted || error?.name === "AbortError";
++    return { ok: false, status: 0, failure: isTimeout ? "timeout" : "transport" };
+   } finally {
+     clearTimeout(timer);
+   }
+ }
+ 
++/** Internal-only standings diagnosis. Never include an upstream body or identity. */
++function classifyStandingsFailure(result) {
++  if (result?.ok && !Array.isArray(result.body)) return "unexpected_shape";
++  if (result?.parseError) return "invalid_json";
++  if (result?.failure === "timeout") return "timeout";
++  if (result?.failure === "transport") return "transport";
++  const status = finiteNumber(result?.status);
++  return status !== null && status > 0 ? `http_${Math.trunc(status)}` : "transport";
++}
++
++function r2laSession(payload) {
++  const scoring = payload?.mScoringInfo;
++  if (!scoring || typeof scoring !== "object" || Array.isArray(scoring)) return null;
++  return {
++    serverName: scoring.mServerName,
++    trackName: scoring.mTrackName,
++    session: typeof scoring.mSession === "string" ? scoring.mSession : "—",
++    currentEventTime: scoring.mCurrentET,
++    endEventTime: scoring.mEndET,
++    maximumLaps: scoring.mMaxLaps,
++    lapDistance: scoring.mLapDist,
++    ambientTemp: scoring.mAmbientTemp,
++    trackTemp: scoring.mTrackTemp,
++    raining: scoring.mRaining,
++    yellowFlagState: scoring.mYellowFlagState,
++    sectorFlag: scoring.mSectorFlag,
++  };
++}
++
++function r2laVehicles(payload) {
++  if (!Array.isArray(payload?.mVehicles)) return null;
++  return payload.mVehicles
++    .filter((vehicle) => vehicle && typeof vehicle === "object")
++    .map((vehicle) => ({
++      slotID: vehicle.mID,
++      driverName: vehicle.mDriverName,
++      vehicleName: vehicle.mVehicleName,
++      fullTeamName: vehicle.mTeamName,
++      carNumber: vehicle.mCarNumber,
++      carClass: vehicle.mVehicleClass,
++      position: vehicle.mPlace,
++      lapsCompleted: vehicle.mTotalLaps,
++      bestLapTime: vehicle.mBestLapTime,
++      lastLapTime: vehicle.mLastLapTime,
++      timeBehindLeader: vehicle.mTimeBehindLeader,
++      timeBehindNext: vehicle.mTimeBehindNext,
++      lapsBehindLeader: vehicle.mLapsBehindLeader,
++      pitstops: vehicle.mNumPitstops,
++      pitting: finiteNumber(vehicle.mInPits) !== null && finiteNumber(vehicle.mInPits) !== 0,
++      lapDistance: vehicle.mLapDist,
++      // R2LA exposes mLastSector1/2, but their units and cumulative semantics
++      // are not established here. Omit them rather than publish false sectors.
++    }));
++}
++
++/**
++ * Isolated R2LA adapter. It deliberately shares the existing B404 DTO builder
++ * so the public contract and the track renderer keep their current shape.
++ */
++export async function collectR2laLiveTiming(sourceId, options = {}) {
++  const registry = options.registry ?? SOURCE_REGISTRY;
++  const source = registry[sourceId];
++  if (!source) throw new Error("unknown_source");
++  const baseUrl = typeof source.r2laBaseUrl === "string" ? source.r2laBaseUrl.replace(/\/$/, "") : "";
++  if (!baseUrl) throw new Error("r2la_source_unconfigured");
++
++  const fetchImpl = options.fetchImpl ?? globalThis.fetch;
++  if (typeof fetchImpl !== "function") throw new Error("fetch_unavailable");
++  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
++  const now = options.now ?? (() => new Date().toISOString());
++  // The R2LA payload has no verified layout identity. Only a caller that has
++  // resolved the active RF2 event locally may opt into publishing this value.
++  const trackTechnicalId = typeof options.trackTechnicalId === "string"
++    && options.trackTechnicalId.trim()
++    ? options.trackTechnicalId.trim()
++    : null;
++  const result = await requestJson(`${baseUrl}/live/get_data`, { fetchImpl, timeoutMs });
++  const session = result.ok ? r2laSession(result.body) : null;
++  const vehicles = result.ok ? r2laVehicles(result.body) : null;
++  if (!session || !vehicles) {
++    return { ok: false, sourceId, status: "error", error: SOURCE_TIMEOUT_ERROR };
++  }
++
++  return {
++    ok: true,
++    data: buildData(
++      sourceId,
++      session,
++      vehicles,
++      null,
++      now(),
++      null,
++      null,
++      null,
++      null,
++      trackTechnicalId,
++    ),
++  };
++}
++
++function nativeTrackContext(options) {
++  const trackTechnicalId = publicText(options.nativeTrackTechnicalId) || null;
++  if (trackTechnicalId === null) return null;
++  return {
++    serverUptime: null,
++    trackLength: null,
++    trackTechnicalId,
++  };
++}
++
++async function collectContext(source, options, fetchImpl, timeoutMs) {
++  return nativeTrackContext(options) ?? fetchManagerContext(source, {
++    fetchImpl,
++    timeoutMs,
++    managerUrl: managerBaseUrl(options),
++  });
++}
++
+ export async function collectLiveTiming(sourceId, options = {}) {
+   const registry = options.registry ?? SOURCE_REGISTRY;
+   const source = registry[sourceId];
+@@ -689,7 +851,32 @@ export async function collectLiveTiming(sourceId, options = {}) {
+     { fetchImpl, timeoutMs },
+   );
+   if (!standingsResult.ok || !Array.isArray(standingsResult.body)) {
+-    return { ok: false, sourceId, status: "error", error: "standings_unavailable" };
++    const standingsFailure = classifyStandingsFailure(standingsResult);
++    const managerContext = await collectContext(source, options, fetchImpl, timeoutMs);
++    const weatherClientStatus = await detectWeatherClient(sourceId, {
++      probe: options.weatherClientProbe,
++    });
++    return {
++      ok: true,
++      degraded: true,
++      error: "standings_unavailable",
++      standingsFailure,
++      upstreamStatus: standingsResult.status,
++      data: buildData(
++        sourceId,
++        sessionResult.body,
++        [],
++        null,
++        now(),
++        selection,
++        managerContext.serverUptime,
++        weatherClientStatus,
++        managerContext.trackLength,
++        managerContext.trackTechnicalId,
++        "degraded",
++        false,
++      ),
++    };
+   }
+ 
+   const historyResult = options.includeHistory === false
+@@ -699,11 +886,7 @@ export async function collectLiveTiming(sourceId, options = {}) {
+         { fetchImpl, timeoutMs },
+       );
+   const history = historyResult?.ok ? historyResult.body : null;
+-  const managerContext = await fetchManagerContext(source, {
+-    fetchImpl,
+-    timeoutMs,
+-    managerUrl: managerBaseUrl(options),
+-  });
++  const managerContext = await collectContext(source, options, fetchImpl, timeoutMs);
+   const weatherClientStatus = await detectWeatherClient(sourceId, {
+     probe: options.weatherClientProbe,
+   });
+@@ -813,6 +996,7 @@ export class LiveTimingStreamHub {
+         running: false,
+         sequence: 0,
+         lastEvent: null,
++        healthState: null,
+       };
+       this.states.set(sourceId, state);
+     }
+@@ -874,11 +1058,32 @@ export class LiveTimingStreamHub {
+     const startedAt = Date.now();
+     try {
+       const result = await this.collect(state.sourceId);
++      const nextHealthState = result.ok
++        ? result.degraded
++          ? `degraded:${result.error ?? "partial"}`
++          : "online"
++        : `error:${result.error ?? "adapter_failure"}`;
++      if (state.healthState !== nextHealthState) {
++        const previousHealthState = state.healthState;
++        state.healthState = nextHealthState;
++        if (nextHealthState === "online" && previousHealthState) {
++          console.info(
++            `[Live Timing] source=${state.sourceId} recovered previous=${previousHealthState}`,
++          );
++        } else if (nextHealthState !== "online") {
++          const upstreamStatus = result.upstreamStatus ?? "n/a";
++          const standingsFailure = result.standingsFailure ?? "n/a";
++          console.warn(
++            `[Live Timing] source=${state.sourceId} state=${nextHealthState} standingsFailure=${standingsFailure} upstreamStatus=${upstreamStatus}`,
++          );
++        }
++      }
+       if (result.ok) {
+         this.broadcast(state, "snapshot", {
+           success: true,
+           sourceId: state.sourceId,
+           transport: "sse",
++          degraded: result.degraded === true,
+           data: result.data,
+         });
+       } else {
+@@ -890,6 +1095,14 @@ export class LiveTimingStreamHub {
+         });
+       }
+     } catch {
++      const nextHealthState = "error:adapter_failure";
++      if (state.healthState !== nextHealthState) {
++        const previousHealthState = state.healthState;
++        state.healthState = nextHealthState;
++        console.warn(
++          `[Live Timing] source=${state.sourceId} state=${nextHealthState} previous=${previousHealthState ?? "none"}`,
++        );
++      }
+       this.broadcast(state, "status", {
+         success: false,
+         sourceId: state.sourceId,
+@@ -1027,7 +1240,11 @@ export function createPublicLiveTimingHandler(options = {}) {
+         });
+         return;
+       }
+-      writeJson(response, 200, { success: true, data: result.data });
++      writeJson(response, 200, {
++        success: true,
++        degraded: result.degraded === true,
++        data: result.data,
++      });
+     } catch {
+       writeJson(response, 500, {
+         success: false,
+diff --git a/tests/live-timing-api.test.mjs b/tests/live-timing-api.test.mjs
+index 3101b9a..299910c 100644
+--- a/tests/live-timing-api.test.mjs
++++ b/tests/live-timing-api.test.mjs
+@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
+ 
+ const {
+   collectLiveTiming,
++  collectR2laLiveTiming,
+   createPublicLiveTimingHandler,
+   formatRFactorDuration,
+   LiveTimingStreamHub,
+@@ -11,12 +12,13 @@ const {
+   "../server/live-timing-api.mjs"
+ );
+ 
+-function response(status, body) {
++function response(status, body, { parseError = false } = {}) {
+   return {
+     status,
+     ok: status >= 200 && status < 300,
+     headers: new Map([["content-type", "application/json"]]),
+     async json() {
++      if (parseError) throw new SyntaxError("invalid json");
+       return body;
+     },
+   };
+@@ -26,7 +28,7 @@ function fakeFetch(routes) {
+   return async (url) => {
+     const route = routes[url];
+     if (!route) throw new Error(`unexpected URL: ${url}`);
+-    return response(route.status ?? 200, route.body);
++    return response(route.status ?? 200, route.body, route);
+   };
+ }
+ 
+@@ -70,6 +72,8 @@ const standing = {
+   bestLapTime: 125.123,
+   bestSectorTime1: 40.1,
+   bestSectorTime2: 42.2,
++  lastSectorTime1: 41.111,
++  lastSectorTime2: 43.222,
+   lastLapTime: 126.456,
+   timeBehindLeader: 0,
+   lapsBehindLeader: 0,
+@@ -174,6 +178,105 @@ function makeJsonResponse() {
+   };
+ }
+ 
++const r2laRegistry = {
++  s20_vm: {
++    sourceId: "s20_vm",
++    serverNumber: 20,
++    r2laBaseUrl: "http://r2la.test",
++  },
++};
++
++const r2laPayload = {
++  mScoringInfo: {
++    mServerName: "!B404",
++    mTrackName: "Paul Ricard HTTT",
++    mSession: "PRACTICE1",
++    mCurrentET: 49.5,
++    mEndET: 80,
++    mMaxLaps: 2147483647,
++    mLapDist: 5000,
++    mAmbientTemp: 21.85,
++    mTrackTemp: 45.66,
++    mRaining: 0,
++    mMaxPathWetness: 0,
++    mYellowFlagState: "NONE",
++    mSectorFlag: ["UNKNOWN", "UNKNOWN", "UNKNOWN"],
++  },
++  mVehicles: [
++    {
++      mID: 41,
++      mDriverName: "Pilote Deux",
++      mVehicleName: "GT3 publique",
++      mTeamName: "Équipe publique",
++      mCarNumber: "8",
++      mVehicleClass: "GT3",
++      mPlace: 2,
++      mTotalLaps: 3,
++      mBestLapTime: 126.123,
++      mLastLapTime: 127.456,
++      mTimeBehindLeader: 1.25,
++      mTimeBehindNext: 1.25,
++      mLapsBehindLeader: 0,
++      mInPits: 0,
++      mNumPitstops: 1,
++      mLapDist: 2500,
++    },
++    {
++      mID: 40,
++      mDriverName: "Pilote Un",
++      mVehicleName: "GT3 publique",
++      mTeamName: "Équipe publique",
++      mCarNumber: "7",
++      mVehicleClass: "GT3",
++      mPlace: 1,
++      mTotalLaps: 3,
++      mBestLapTime: 125.123,
++      mLastLapTime: 126.456,
++      mTimeBehindLeader: 0,
++      mTimeBehindNext: 0,
++      mLapsBehindLeader: 0,
++      mInPits: 1,
++      mNumPitstops: 2,
++      mLapDist: 1250,
++    },
++  ],
++};
++
++test("normalise le snapshot R2LA vers le DTO B404 pour classement et carte", async () => {
++  const result = await collectR2laLiveTiming("s20_vm", {
++    registry: r2laRegistry,
++    fetchImpl: fakeFetch({ "http://r2la.test/live/get_data": { body: r2laPayload } }),
++    now: () => "2026-09-30T18:00:00.000Z",
++  });
++
++  assert.equal(result.ok, true);
++  assert.equal(result.data.sourceId, "s20_vm");
++  assert.equal(result.data.server.circuit, "Paul Ricard HTTT");
++  assert.equal(result.data.server.trackTechnicalId, null);
++  assert.equal(result.data.server.driversCount, 2);
++  assert.equal(result.data.standings.length, 2);
++  assert.deepEqual(result.data.standings.map((entry) => entry.position), [1, 2]);
++  assert.deepEqual(result.data.standings.map((entry) => entry.lapDistance), [1250, 2500]);
++  assert.deepEqual(result.data.standings.map((entry) => entry.lapProgress), [0.25, 0.5]);
++  assert.equal(result.data.standings[0].inPit, true);
++  assert.equal(result.data.standings[0].sector1, "—");
++  assert.equal(result.data.standings[0].sector2, "—");
++  assert.equal(result.data.standings[0].sector3, null);
++  assert.equal(result.data.records.available, false);
++  assert.equal(result.data.tyres.available, false);
++});
++
++test("R2LA publie un technicalId seulement lorsqu’il est explicitement confirmé", async () => {
++  const result = await collectR2laLiveTiming("s20_vm", {
++    registry: r2laRegistry,
++    fetchImpl: fakeFetch({ "http://r2la.test/live/get_data": { body: r2laPayload } }),
++    trackTechnicalId: "WATKINS_GLEN_BOOT",
++  });
++
++  assert.equal(result.ok, true);
++  assert.equal(result.data.server.trackTechnicalId, "WATKINS_GLEN_BOOT");
++});
++
+ test("collecte s1_vm et retourne un DTO public filtré avec Records", async () => {
+   const result = await collectLiveTiming("s1_vm", {
+     registry,
+@@ -203,6 +306,134 @@ test("collecte s1_vm et retourne un DTO public filtré avec Records", async () =
+   assert.doesNotMatch(serialized, /steamID|serverPort|carId|carPosition|playerName|playerFileName/);
+ });
+ 
++test("le DTO expose les secteurs du dernier tour et laisse la qualification absente à null", async () => {
++  const result = await collectLiveTiming("s1_vm", {
++    registry,
++    fetchImpl: fakeFetch(
++      routes({
++        standings: [{
++          ...standing,
++          qualification: 0,
++          carClass: undefined,
++          bestSectorTime1: 40.1,
++          bestSectorTime2: 42.2,
++          lastSectorTime1: 41.111,
++          lastSectorTime2: 43.222,
++        }],
++      }),
++    ),
++    now: () => "2026-09-07T12:00:00.000Z",
++  });
++
++  assert.equal(result.ok, true);
++  const [entry] = result.data.standings;
++  assert.equal(entry.sector1, "0:41.111");
++  assert.equal(entry.sector2, "0:02.111");
++  assert.equal(entry.sector3, "1:23.234");
++  assert.equal(entry.startingPosition, null);
++  assert.equal(entry.carClass, null);
++  assert.equal(entry.fuelFraction, 0.5);
++});
++
++test("les temps sectoriels cumulés sont convertis en durées de secteurs", async () => {
++  const result = await collectLiveTiming("s1_vm", {
++    registry,
++    fetchImpl: fakeFetch(
++      routes({
++        standings: [{
++          ...standing,
++          lapsCompleted: 1,
++          lastLapTime: 110.379,
++          lastSectorTime1: 25.641,
++          lastSectorTime2: 67.767,
++        }],
++      }),
++    ),
++  });
++
++  assert.equal(result.ok, true);
++  const [entry] = result.data.standings;
++  assert.equal(entry.sector1, "0:25.641");
++  assert.equal(entry.sector2, "0:42.126");
++  assert.equal(entry.sector3, "0:42.612");
++});
++
++test("les bornes incohérentes mettent en tiret les secteurs impossibles", async () => {
++  const result = await collectLiveTiming("s1_vm", {
++    registry,
++    fetchImpl: fakeFetch(
++      routes({
++        standings: [{
++          ...standing,
++          lapsCompleted: 1,
++          lastLapTime: 100,
++          lastSectorTime1: 60,
++          lastSectorTime2: 50,
++        }],
++      }),
++    ),
++  });
++
++  assert.equal(result.ok, true);
++  const [entry] = result.data.standings;
++  assert.equal(entry.sector1, "1:00.000");
++  assert.equal(entry.sector2, "—");
++  assert.equal(entry.sector3, null);
++});
++
++test("un dernier secteur reste indisponible quand S2 brut dépasse le dernier tour", async () => {
++  const result = await collectLiveTiming("s1_vm", {
++    registry,
++    fetchImpl: fakeFetch(
++      routes({
++        standings: [{
++          ...standing,
++          lapsCompleted: 1,
++          lastLapTime: 110,
++          lastSectorTime1: 25,
++          lastSectorTime2: 120,
++        }],
++      }),
++    ),
++  });
++
++  assert.equal(result.ok, true);
++  const [entry] = result.data.standings;
++  assert.equal(entry.sector1, "0:25.000");
++  assert.equal(entry.sector2, "—");
++  assert.equal(entry.sector3, null);
++});
++
++test("S3 reste indisponible si le dernier tour est incomplet ou incohérent", async () => {
++  const invalidRoutes = routes({
++    standings: [{
++      ...standing,
++      lastLapTime: 100,
++      lastSectorTime1: 60,
++      lastSectorTime2: 50,
++    }],
++  });
++  const invalidResult = await collectLiveTiming("s1_vm", {
++    registry,
++    fetchImpl: fakeFetch(invalidRoutes),
++  });
++  assert.equal(invalidResult.ok, true);
++  assert.equal(invalidResult.data.standings[0].sector3, null);
++
++  const incompleteRoutes = routes({
++    standings: [{
++      ...standing,
++      lastLapTime: -1,
++    }],
++  });
++  const incompleteResult = await collectLiveTiming("s1_vm", {
++    registry,
++    fetchImpl: fakeFetch(incompleteRoutes),
++  });
++  assert.equal(incompleteResult.ok, true);
++  assert.equal(incompleteResult.data.standings[0].sector3, null);
++});
++
+ test("le DTO conserve uniquement les états jaunes explicitement confirmés", async () => {
+   const sectorRoutes = routes({
+     standings: [{ ...standing, underYellow: true }],
+@@ -323,6 +554,31 @@ test("le DTO s20_vm affiche l’uptime Manager sans utiliser le chrono de sessio
+   assert.equal(result.data.session.sessionTimeRemaining, "00:00:30");
+ });
+ 
++test("la collecte native S20 directe ne contacte pas le Manager avec un technicalId explicitement vérifié", async () => {
++  const directRoutes = s20Routes();
++  delete directRoutes["http://127.0.0.1:4000/api/view/servers/20"];
++  const requested = [];
++  const fetchImpl = async (url) => {
++    requested.push(url);
++    const route = directRoutes[url];
++    if (!route) throw new Error(`unexpected URL: ${url}`);
++    return response(route.status ?? 200, route.body, route);
++  };
++
++  const result = await collectLiveTiming("s20_vm", {
++    registry: s20Registry,
++    fetchImpl,
++    nativeTrackTechnicalId: "WATKINS_GLEN_BOOT",
++    weatherClientProbe: async () => false,
++  });
++
++  assert.equal(result.ok, true);
++  assert.equal(result.degraded, undefined);
++  assert.equal(result.data.server.trackTechnicalId, "WATKINS_GLEN_BOOT");
++  assert.equal(result.data.session.serverUptime, null);
++  assert.equal(requested.some((url) => url.includes(":4000/")), false);
++});
++
+ test("le DTO expose la longueur catalogue GDB sans remplacer la lapDistance runtime", async () => {
+   const result = await collectLiveTiming("s20_vm", {
+     registry: s20Registry,
+@@ -441,23 +697,135 @@ test("le formateur rFactor 2 convertit les secondes natives en HH:MM:SS", () =>
+   assert.equal(formatRFactorDuration(0), "00:00:00");
+ });
+ 
+-test("un classement HTTP 500 bloque la réponse publique sans devenir un tableau vide", async () => {
+-  const badRoutes = routes();
+-  badRoutes["http://127.0.0.1:5414/rest/watch/standings"] = {
++test("un classement HTTP 500 conserve le contexte source en état dégradé sans fabriquer de pilotes", async () => {
++  const badRoutes = s20Routes();
++  badRoutes["http://127.0.0.1:5354/rest/watch/standings"] = {
+     status: 500,
+     body: { internal: "must-not-leak" },
+   };
+ 
+-  const result = await collectLiveTiming("s1_vm", {
+-    registry,
++  const result = await collectLiveTiming("s20_vm", {
++    registry: s20Registry,
++    fetchImpl: fakeFetch(badRoutes),
++    now: () => "2026-09-29T22:00:00.000Z",
++    weatherClientProbe: async () => false,
++  });
++
++  assert.equal(result.ok, true);
++  assert.equal(result.degraded, true);
++  assert.equal(result.error, "standings_unavailable");
++  assert.equal(result.standingsFailure, "http_500");
++  assert.equal(result.data.server.status, "degraded");
++  assert.equal(result.data.server.circuit, "Paul Ricard  HTTT");
++  assert.equal(result.data.server.currentSession, "Essais libres 1");
++  assert.equal(result.data.server.driversCount, null);
++  assert.equal(result.data.server.lapsCompleted, null);
++  assert.deepEqual(result.data.standings, []);
++  assert.equal(result.data.session.phase, "practice");
++});
++
++test("un classement JSON de forme inattendue est classifié en interne sans fuite publique", async () => {
++  const badRoutes = s20Routes();
++  badRoutes["http://127.0.0.1:5354/rest/watch/standings"] = {
++    status: 200,
++    body: { vehicles: "must-not-leak" },
++  };
++
++  const result = await collectLiveTiming("s20_vm", {
++    registry: s20Registry,
++    fetchImpl: fakeFetch(badRoutes),
++    weatherClientProbe: async () => false,
++  });
++
++  assert.equal(result.ok, true);
++  assert.equal(result.degraded, true);
++  assert.equal(result.standingsFailure, "unexpected_shape");
++  assert.deepEqual(result.data.standings, []);
++});
++
++test("un classement JSON illisible est classifié en interne sans fuite publique", async () => {
++  const badRoutes = s20Routes();
++  badRoutes["http://127.0.0.1:5354/rest/watch/standings"] = {
++    status: 200,
++    parseError: true,
++  };
++
++  const result = await collectLiveTiming("s20_vm", {
++    registry: s20Registry,
++    fetchImpl: fakeFetch(badRoutes),
++    weatherClientProbe: async () => false,
++  });
++
++  assert.equal(result.ok, true);
++  assert.equal(result.standingsFailure, "invalid_json");
++  assert.deepEqual(result.data.standings, []);
++});
++
++test("un timeout standings est classifié en interne sans fuite publique", async () => {
++  const baseFetch = fakeFetch(s20Routes());
++  const fetchImpl = async (url, options) => {
++    if (!url.endsWith("/rest/watch/standings")) return baseFetch(url, options);
++    return new Promise((_resolve, reject) => {
++      options.signal.addEventListener("abort", () => {
++        const error = new Error("aborted");
++        error.name = "AbortError";
++        reject(error);
++      }, { once: true });
++    });
++  };
++
++  const result = await collectLiveTiming("s20_vm", {
++    registry: s20Registry,
++    fetchImpl,
++    timeoutMs: 1,
++    weatherClientProbe: async () => false,
++  });
++
++  assert.equal(result.ok, true);
++  assert.equal(result.standingsFailure, "timeout");
++  assert.deepEqual(result.data.standings, []);
++});
++
++test("la route publique expose explicitement le snapshot dégradé sans exposer l’erreur interne", async () => {
++  const badRoutes = s20Routes();
++  badRoutes["http://127.0.0.1:5354/rest/watch/standings"] = {
++    status: 500,
++    body: { internal: "must-not-leak" },
++  };
++  const handler = createPublicLiveTimingHandler({
++    registry: s20Registry,
++    fetchImpl: fakeFetch(badRoutes),
++    weatherClientProbe: async () => false,
++  });
++  const response = makeJsonResponse();
++  await handler({ method: "GET", url: "/api/public/live-timing/s20_vm" }, response);
++
++  assert.equal(response.statusCode, 200);
++  const payload = JSON.parse(response.body);
++  assert.equal(payload.success, true);
++  assert.equal(payload.degraded, true);
++  assert.equal(payload.data.server.status, "degraded");
++  assert.deepEqual(payload.data.standings, []);
++  assert.doesNotMatch(response.body, /must-not-leak|standingsFailure|upstreamStatus/);
++});
++
++test("une indisponibilité sessionInfo reste une panne source sans DTO partiel", async () => {
++  const badRoutes = s20Routes();
++  badRoutes["http://127.0.0.1:5354/rest/watch/sessionInfo"] = {
++    status: 503,
++    body: { internal: "must-not-leak" },
++  };
++
++  const result = await collectLiveTiming("s20_vm", {
++    registry: s20Registry,
+     fetchImpl: fakeFetch(badRoutes),
+   });
+ 
+   assert.deepEqual(result, {
+     ok: false,
+-    sourceId: "s1_vm",
++    sourceId: "s20_vm",
+     status: "error",
+-    error: "standings_unavailable",
++    error: "source_unavailable",
+   });
+ });
+ 
+diff --git a/tests/live-timing-frontend-contract.test.mjs b/tests/live-timing-frontend-contract.test.mjs
+index fc3ad57..03973e3 100644
+--- a/tests/live-timing-frontend-contract.test.mjs
++++ b/tests/live-timing-frontend-contract.test.mjs
+@@ -41,7 +41,14 @@ test("Progression Live affiche la position de classement et conserve le runtime
+   assert.match(types, /carNumber\?: string/);
+ });
+ 
+-test("le classement reprend la session active et la position de départ", async () => {
++test("Progression Live affiche le titre Positions en piste", async () => {
++  const track = await text("app/_components/live-timing-track-line.tsx");
++
++  assert.match(track, /Positions en piste/);
++  assert.doesNotMatch(track, /Position des voitures sur le tour/);
++});
++
++test("le classement reprend la session active et la position de qualification", async () => {
+   const standings = await text("app/_components/live-timing-standings.tsx");
+   const row = await text("app/_components/live-timing-standing-row.tsx");
+   const info = await text("app/_components/live-timing-server-info.tsx");
+@@ -50,7 +57,7 @@ test("le classement reprend la session active et la position de départ", async
+   assert.match(standings, /case "qualifying"/);
+   assert.match(standings, /case "race"/);
+   assert.match(row, /startingPosition/);
+-  assert.match(row, /Position de départ/);
++  assert.match(row, /Position de qualification/);
+   assert.match(info, /tours parcourus/);
+   assert.doesNotMatch(info, /Pluie \/ Tours/);
+ });
+@@ -102,16 +109,21 @@ test("la section Pneus prévoit explicitement l’absence de données API", asyn
+ test("les bulles Live restent proches du tracé, lisibles jusqu’au rang 35 et les PIT ne sont pas jaunes", async () => {
+   const track = await text("app/_components/live-timing-track-line.tsx");
+   const row = await text("app/_components/live-timing-standing-row.tsx");
++  const theme = await text("app/_services/live-timing-visual-theme.ts");
+   const types = await text("app/_types/live-timing.ts");
+ 
+   assert.match(track, /const MARKER_LABEL_RADIUS = 8/);
+   assert.match(track, /r=\{MARKER_LABEL_RADIUS\}/);
+   assert.match(track, /fontSize=\{MARKER_LABEL_FONT_SIZE\}/);
+-  assert.match(track, /entry\.underYellow === true/);
+-  assert.match(track, /entry\.inPit \? "#06b6d4"/);
+-  assert.match(track, /data-sector-flag-overlay/);
+-  assert.match(row, /bg-cyan-500\/15/);
+-  assert.match(row, /text-cyan-300/);
++  assert.match(track, /const markerPalette = getMarkerPalette/);
++  assert.match(theme, /PIT_MARKER_PALETTE/);
++  assert.match(theme, /#64748b/);
++  assert.match(theme, /#cbd5e1/);
++  assert.doesNotMatch(track, /entry\.underYellow === true/);
++  assert.doesNotMatch(track, /entry\.inPit \? "#06b6d4"/);
++  assert.doesNotMatch(track, /data-sector-flag-overlay/);
++  assert.match(row, /border-slate-300\/60/);
++  assert.match(row, /text-slate-100/);
+   assert.doesNotMatch(row, /bg-yellow-500\/15[\s\S]*?PIT/);
+   assert.match(types, /underYellow\?: boolean \| null/);
+ });
+@@ -129,26 +141,85 @@ test("la géométrie AIW utilise un cache précis source/layout avec stale-while
+   assert.match(client, /flags=\{data\.session\.flags\}/);
+ });
+ 
+-test("les secteurs jaunes sont rendus uniquement quand le contrat les confirme", async () => {
++test("les drapeaux jaunes restent non localisés quand les bornes AIW manquent", async () => {
+   const track = await text("app/_components/live-timing-track-line.tsx");
+   const banner = await text("app/_components/live-timing-session-banner.tsx");
+   const types = await text("app/_types/live-timing.ts");
+ 
+   assert.match(track, /yellowSectors/);
+-  assert.match(track, /data-sector-flag-marker/);
+-  assert.match(track, /S\$\{sector\}/);
++  assert.match(track, /data-sector-flag-notice/);
+   assert.match(track, /Drapeau jaune/);
++  assert.match(track, /bornes sectorielles AIW non fournies/);
++  assert.match(track, /portion du tracé non colorée/);
++  assert.doesNotMatch(track, /data-sector-flag-overlay/);
++  assert.doesNotMatch(track, /lapLength\s*\/\s*3/);
+   assert.match(banner, /flag\.sector > 0/);
+   assert.match(banner, /Général/);
+   assert.match(types, /flags: Flag\[\]/);
+ });
+ 
++test("les pastilles animent seulement les petits déplacements et se recalent sur un changement de contexte", async () => {
++  const track = await text("app/_components/live-timing-track-line.tsx");
++
++  assert.match(track, /retargetMarkerMotion/);
++  assert.match(track, /requestAnimationFrame/);
++  assert.match(track, /VISUAL_MARKER_ANIMATION_DURATION_MS/);
++  assert.match(track, /MAX_MARKER_ANIMATION_DISTANCE/);
++  assert.match(track, /getAnimatedLapDistance/);
++  assert.match(track, /data-marker-motion/);
++  assert.match(track, /entry\.inPit === true/);
++  assert.match(track, /participantId/);
++  assert.doesNotMatch(track, /key=\{`\$\{entry\.position\}-\$\{entry\.driverName\}`\}/);
++});
++
++test("la retargetisation repart de la position affichée pendant le cycle SSE", async () => {
++  const motion = await text("app/_services/live-timing-track-motion.ts");
++  const track = await text("app/_components/live-timing-track-line.tsx");
++
++  assert.match(motion, /VISUAL_MARKER_ANIMATION_DURATION_MS = 760/);
++  assert.match(motion, /retargetMarkerMotion/);
++  assert.match(motion, /getAnimatedLapDistance\(active\.plan, elapsedMs\)/);
++  assert.match(motion, /getAnimatedLapVelocity\(active\.plan, elapsedMs\)/);
++  assert.match(motion, /initialVelocity/);
++  assert.match(motion, /progressCubed/);
++  assert.match(track, /retargetMarkerMotion/);
++  assert.match(track, /sessionKey/);
++});
++
++test("l’animation SVG ne réconcilie pas React à chaque frame", async () => {
++  const track = await text("app/_components/live-timing-track-line.tsx");
++
++  assert.match(track, /useLayoutEffect/);
++  assert.match(track, /markerElementsRef/);
++  assert.match(track, /setAttribute\("transform"/);
++  assert.doesNotMatch(track, /setVisualMarkerState/);
++});
++
++test("le badge jaune est externe et le trait de liaison dépend de bornes AIW explicites", async () => {
++  const track = await text("app/_components/live-timing-track-line.tsx");
++
++  assert.match(track, /sectorBounds/);
++  assert.match(track, /deriveSector3Bounds/);
++  assert.match(track, /startDistance: sector2\.endDistance/);
++  assert.match(track, /data-sector-flag-track/);
++  assert.match(track, /getSectorPath/);
++  assert.match(track, /data-sector-flag-badge/);
++  assert.match(track, /data-sector-flag-leader/);
++  assert.match(track, /getSectorAnchor/);
++  assert.match(track, /bornes sectorielles AIW non fournies/);
++  assert.match(track, /pointer-events-none/);
++  assert.doesNotMatch(track, /data-sector-flag-overlay/);
++  assert.doesNotMatch(track, /lapLength\s*\/\s*3/);
++});
++
+ test("les vignettes numérotées restent directement sur leurs ancres AIW sans offset visuel", async () => {
+   const track = await text("app/_components/live-timing-track-line.tsx");
+ 
+   assert.match(track, /transform=\{`translate\(\$\{point\.x\} \$\{point\.y\}\)`\}/);
+-  assert.match(track, /interpolateGeometryPoint\(geometry, entry\.lapDistance/);
+-  assert.match(track, /entry\.inPit \? "#06b6d4"/);
++  assert.match(track, /markerElementsRef\.current\.set\(identity, element\)/);
++  assert.match(track, /getMarkerPalette\(entry\.carClass, entry\.inPit === true\)/);
++  assert.doesNotMatch(track, /entry\.underYellow === true/);
++  assert.doesNotMatch(track, /entry\.inPit \? "#06b6d4"/);
+   assert.doesNotMatch(track, /labelOffset/);
+   assert.doesNotMatch(track, /BATTLE_BUBBLE_DISTANCE/);
+   assert.doesNotMatch(track, /BATTLE_BUBBLE_OUTWARD_OFFSET/);
+@@ -165,3 +236,84 @@ test("le hook efface le classement périmé pendant une erreur SSE puis accepte
+   assert.match(hook, /setIsLive\(false\)/);
+   assert.match(hook, /applyResult\(result\)/);
+ });
++
++test("le classement affiche les colonnes de la maquette sans Au suivant ni Départ", async () => {
++  const standings = await text("app/_components/live-timing-standings.tsx");
++  const row = await text("app/_components/live-timing-standing-row.tsx");
++
++  assert.match(standings, /Évol\./);
++  assert.match(standings, /Secteurs du dernier tour/i);
++  assert.match(standings, /Usure des 4 pneus/i);
++  assert.doesNotMatch(standings, /Au suivant/);
++  assert.doesNotMatch(standings, />Départ</);
++  assert.match(standings, /Meilleur tour/);
++  assert.match(row, /sessionPhase/);
++  assert.match(row, /entry\.carClass/);
++  assert.match(row, /entry\.pitStops/);
++  assert.match(row, /entry\.lastLap/);
++  assert.match(row, /entry\.sector1/);
++  assert.match(row, /entry\.sector2/);
++  assert.match(row, /entry\.sector3/);
++  assert.match(standings, /VMax/);
++  assert.match(standings, /Pneus[\s\S]*AV\/AR/);
++  assert.match(row, /AVG/);
++  assert.match(row, /AVD/);
++  assert.match(row, /ARG/);
++  assert.match(row, /ARD/);
++  assert.match(row, /En piste/);
++  assert.match(row, /fuelFraction/);
++});
++
++test("l’évolution du classement reste réservée à la course et gère la qualification absente", async () => {
++  const row = await text("app/_components/live-timing-standing-row.tsx");
++
++  assert.match(row, /sessionPhase !== "race"/);
++  assert.match(row, /startingPosition === null/);
++  assert.match(row, /Position inchangée/);
++  assert.match(row, /Gain/);
++  assert.match(row, /Perte/);
++  assert.match(row, /−/);
++});
++
++test("le classement applique une palette B404 cohérente jusqu’aux télémétries et n’isole pas de jaune", async () => {
++  const row = await text("app/_components/live-timing-standing-row.tsx");
++  const theme = await text("app/_services/live-timing-visual-theme.ts");
++
++  assert.match(row, /getCarClassPalette/);
++  assert.match(row, /data-column="classe"/);
++  assert.match(row, /data-column="pneus"/);
++  assert.match(row, /data-column="carburant"/);
++  assert.match(row, /data-column=\{`usure-\$\{corner\}`\}/);
++  assert.match(row, /data-column="statut"/);
++  assert.match(row, /fuelFraction/);
++  assert.match(row, /Fuel/);
++  assert.match(row, /inPit \? "pit"/);
++  assert.match(row, /border-slate/);
++  assert.doesNotMatch(row, /text-yellow-|bg-yellow-|border-yellow-/);
++  assert.match(row, /Sous drapeau/);
++  assert.match(theme, /GT3: Object\.freeze\(\{[\s\S]*fill: "#f97316"/);
++  assert.match(theme, /GT4: Object\.freeze\(\{[\s\S]*fill: "#2563eb"/);
++  assert.match(theme, /LMP2: Object\.freeze\(\{[\s\S]*fill: "#9333ea"/);
++  assert.match(theme, /FALLBACK_CAR_CLASS_PALETTE/);
++  assert.doesNotMatch(theme, /yellow/i);
++});
++
++test("la géométrie AIW utilise la même base publique que le flux Live Timing", async () => {
++  const provider = await text("app/_services/public-live-timing-provider.ts");
++  const track = await text("app/_components/live-timing-track-line.tsx");
++
++  assert.match(provider, /export function publicLiveTimingApiUrl/);
++  assert.match(track, /publicLiveTimingApiUrl\(/);
++  assert.doesNotMatch(track, /fetch\(`\/api\/public\/live-timing/);
++});
++
++test("le classement occupe toute la largeur desktop sans supprimer de colonnes", async () => {
++  const standings = await text("app/_components/live-timing-standings.tsx");
++
++  assert.match(standings, /w-full max-w-none px-3 py-8 sm:px-4 lg:px-6/);
++  assert.doesNotMatch(standings, /max-w-7xl px-6 py-8/);
++  assert.match(standings, /<table className=\"w-full min-w-\[1800px\]\"/);
++  assert.match(standings, /overflow-x-auto/);
++  assert.match(standings, /Usure des 4 pneus/);
++  assert.match(standings, />Statut</);
++});
+diff --git a/tests/track-geometry-frontend-contract.test.mjs b/tests/track-geometry-frontend-contract.test.mjs
+index 007b213..ff85bb6 100644
+--- a/tests/track-geometry-frontend-contract.test.mjs
++++ b/tests/track-geometry-frontend-contract.test.mjs
+@@ -53,6 +53,36 @@ test("la progression utilise le tracé SVG AIW générique et un cache par layou
+   assert.match(types, /trackTechnicalId\?: string \| null/);
+ });
+ 
++test("la progression réserve le gris aux stands confirmés et les couleurs aux classes", async () => {
++  const track = await text("app/_components/live-timing-track-line.tsx");
++  const theme = await text("app/_services/live-timing-visual-theme.ts");
++
++  assert.match(track, /getMarkerPalette\(entry\.carClass, entry\.inPit === true\)/);
++  assert.match(theme, /CAR_CLASS_PALETTES = Object\.freeze/);
++  assert.match(theme, /PIT_MARKER_PALETTE/);
++  assert.match(theme, /#64748b/);
++  assert.match(theme, /#cbd5e1/);
++  assert.match(theme, /GT3: Object\.freeze\(\{[\s\S]*fill: "#f97316"/);
++  assert.match(theme, /GT4: Object\.freeze\(\{[\s\S]*fill: "#2563eb"/);
++  const gt3Fill = theme.match(/GT3: Object\.freeze\(\{[\s\S]*?fill: "([^"]+)"/)?.[1];
++  const gt4Fill = theme.match(/GT4: Object\.freeze\(\{[\s\S]*?fill: "([^"]+)"/)?.[1];
++  assert.ok(gt3Fill && gt4Fill);
++  assert.notEqual(gt3Fill, gt4Fill);
++  assert.match(theme, /LMP2: Object\.freeze\(\{[\s\S]*fill: "#9333ea"/);
++  assert.match(theme, /HYPERCAR/);
++  assert.match(theme, /PORSCHE_CUP/);
++  assert.match(theme, /MULTI_CLASSE/);
++  assert.match(track, /fill=\{markerPalette\.fill\}/);
++  assert.match(track, /stroke=\{markerPalette\.stroke\}/);
++  assert.match(track, /backgroundColor: markerPalette\.fill/);
++  assert.match(track, /borderColor: markerPalette\.stroke/);
++  assert.doesNotMatch(track, /const markerFill = entry\.underYellow/);
++  assert.doesNotMatch(track, /entry\.inPit \? "#06b6d4"/);
++  assert.match(track, /const marker = String\(entry\.position\)/);
++  assert.match(track, /<title>/);
++  assert.doesNotMatch(track, /safetyCar/);
++});
++
+ test("le provider backend route la géométrie sans l’ajouter au snapshot Live", async () => {
+   const api = await text("server/live-timing-api.mjs");
+   const geometry = await text("server/track-geometry.mjs");

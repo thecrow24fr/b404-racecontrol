@@ -8,6 +8,8 @@ import {
   type LiveTimingSourceOption,
 } from "../_services/public-live-timing-provider";
 import { useLiveTiming } from "../_services/use-live-timing";
+import { resolvePreviewTrackTechnicalId } from "../_services/live-timing-preview-layout.mjs";
+import { liveTimingHealthPresentation } from "../_services/live-tyre-display-percent.mjs";
 import { LiveTimingHero } from "./live-timing-hero";
 import { LiveTimingTrackLine } from "./live-timing-track-line";
 import { SessionBanner } from "./live-timing-session-banner";
@@ -64,8 +66,24 @@ export function LiveTimingClient({
 
   const { data, isLive, isLoading, error, lastUpdated, refresh } =
     useLiveTiming(initialData, selectedSourceId);
+  const health = liveTimingHealthPresentation({
+    status: data.server.status,
+    standingsSource: data.server.standingsSource,
+    driversCount: data.server.driversCount,
+    standingsCount: data.standings.length,
+    error,
+  });
   const selectedSource = sources.find((item) => item.sourceId === selectedSourceId);
   const sourceLabel = selectedSource?.label ?? `Source ${selectedSourceId}`;
+  const trackTechnicalId = resolvePreviewTrackTechnicalId(
+    data.server.circuit,
+    data.server.trackTechnicalId,
+  );
+  const trackSessionKey = [
+    selectedSourceId,
+    data.session.sessionCode ?? data.server.currentSession,
+    data.session.phase,
+  ].join(":");
   const sourceBadgeClass = isLive
     ? "bg-emerald-500/10 text-emerald-400"
     : "bg-amber-500/10 text-amber-400";
@@ -137,16 +155,20 @@ export function LiveTimingClient({
           </div>
         </div>
       </div>
-      <LiveTimingHero server={data.server} />
+      <LiveTimingHero server={data.server} statusOverride={health.status} />
       <SessionBanner session={data.session} />
       <ServerInfoPanel
         server={data.server}
         trackTemperature={data.session.trackTemp}
         weatherClientStatus={data.session.weatherClientStatus}
+        statusOverride={health.status}
+        standingsNotice={health.notice}
       />
       <LiveTimingTrackLine
+        key={trackSessionKey}
         sourceId={selectedSourceId}
-        trackTechnicalId={data.server.trackTechnicalId ?? null}
+        sessionKey={trackSessionKey}
+        trackTechnicalId={trackTechnicalId}
         lapDistance={data.server.lapDistance ?? null}
         trackLength={data.server.trackLength ?? null}
         trackLengthSource={data.server.trackLengthSource ?? null}
@@ -157,6 +179,7 @@ export function LiveTimingClient({
         standings={data.standings}
         sessionName={data.server.currentSession}
         sessionPhase={data.session.phase}
+
       />
       <SiteFooter />
       <ScrollTopButton />

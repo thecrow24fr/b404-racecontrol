@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 const {
   collectLiveTiming,
+  collectR2laLiveTiming,
   createPublicLiveTimingHandler,
   formatRFactorDuration,
   LiveTimingStreamHub,
@@ -11,12 +12,13 @@ const {
   "../server/live-timing-api.mjs"
 );
 
-function response(status, body) {
+function response(status, body, { parseError = false } = {}) {
   return {
     status,
     ok: status >= 200 && status < 300,
     headers: new Map([["content-type", "application/json"]]),
     async json() {
+      if (parseError) throw new SyntaxError("invalid json");
       return body;
     },
   };
@@ -26,7 +28,7 @@ function fakeFetch(routes) {
   return async (url) => {
     const route = routes[url];
     if (!route) throw new Error(`unexpected URL: ${url}`);
-    return response(route.status ?? 200, route.body);
+    return response(route.status ?? 200, route.body, route);
   };
 }
 
@@ -70,6 +72,8 @@ const standing = {
   bestLapTime: 125.123,
   bestSectorTime1: 40.1,
   bestSectorTime2: 42.2,
+  lastSectorTime1: 41.111,
+  lastSectorTime2: 43.222,
   lastLapTime: 126.456,
   timeBehindLeader: 0,
   lapsBehindLeader: 0,
@@ -174,6 +178,105 @@ function makeJsonResponse() {
   };
 }
 
+const r2laRegistry = {
+  s20_vm: {
+    sourceId: "s20_vm",
+    serverNumber: 20,
+    r2laBaseUrl: "http://r2la.test",
+  },
+};
+
+const r2laPayload = {
+  mScoringInfo: {
+    mServerName: "!B404",
+    mTrackName: "Paul Ricard HTTT",
+    mSession: "PRACTICE1",
+    mCurrentET: 49.5,
+    mEndET: 80,
+    mMaxLaps: 2147483647,
+    mLapDist: 5000,
+    mAmbientTemp: 21.85,
+    mTrackTemp: 45.66,
+    mRaining: 0,
+    mMaxPathWetness: 0,
+    mYellowFlagState: "NONE",
+    mSectorFlag: ["UNKNOWN", "UNKNOWN", "UNKNOWN"],
+  },
+  mVehicles: [
+    {
+      mID: 41,
+      mDriverName: "Pilote Deux",
+      mVehicleName: "GT3 publique",
+      mTeamName: "Équipe publique",
+      mCarNumber: "8",
+      mVehicleClass: "GT3",
+      mPlace: 2,
+      mTotalLaps: 3,
+      mBestLapTime: 126.123,
+      mLastLapTime: 127.456,
+      mTimeBehindLeader: 1.25,
+      mTimeBehindNext: 1.25,
+      mLapsBehindLeader: 0,
+      mInPits: 0,
+      mNumPitstops: 1,
+      mLapDist: 2500,
+    },
+    {
+      mID: 40,
+      mDriverName: "Pilote Un",
+      mVehicleName: "GT3 publique",
+      mTeamName: "Équipe publique",
+      mCarNumber: "7",
+      mVehicleClass: "GT3",
+      mPlace: 1,
+      mTotalLaps: 3,
+      mBestLapTime: 125.123,
+      mLastLapTime: 126.456,
+      mTimeBehindLeader: 0,
+      mTimeBehindNext: 0,
+      mLapsBehindLeader: 0,
+      mInPits: 1,
+      mNumPitstops: 2,
+      mLapDist: 1250,
+    },
+  ],
+};
+
+test("normalise le snapshot R2LA vers le DTO B404 pour classement et carte", async () => {
+  const result = await collectR2laLiveTiming("s20_vm", {
+    registry: r2laRegistry,
+    fetchImpl: fakeFetch({ "http://r2la.test/live/get_data": { body: r2laPayload } }),
+    now: () => "2026-09-30T18:00:00.000Z",
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.data.sourceId, "s20_vm");
+  assert.equal(result.data.server.circuit, "Paul Ricard HTTT");
+  assert.equal(result.data.server.trackTechnicalId, null);
+  assert.equal(result.data.server.driversCount, 2);
+  assert.equal(result.data.standings.length, 2);
+  assert.deepEqual(result.data.standings.map((entry) => entry.position), [1, 2]);
+  assert.deepEqual(result.data.standings.map((entry) => entry.lapDistance), [1250, 2500]);
+  assert.deepEqual(result.data.standings.map((entry) => entry.lapProgress), [0.25, 0.5]);
+  assert.equal(result.data.standings[0].inPit, true);
+  assert.equal(result.data.standings[0].sector1, "—");
+  assert.equal(result.data.standings[0].sector2, "—");
+  assert.equal(result.data.standings[0].sector3, null);
+  assert.equal(result.data.records.available, false);
+  assert.equal(result.data.tyres.available, false);
+});
+
+test("R2LA publie un technicalId seulement lorsqu’il est explicitement confirmé", async () => {
+  const result = await collectR2laLiveTiming("s20_vm", {
+    registry: r2laRegistry,
+    fetchImpl: fakeFetch({ "http://r2la.test/live/get_data": { body: r2laPayload } }),
+    trackTechnicalId: "WATKINS_GLEN_BOOT",
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.data.server.trackTechnicalId, "WATKINS_GLEN_BOOT");
+});
+
 test("collecte s1_vm et retourne un DTO public filtré avec Records", async () => {
   const result = await collectLiveTiming("s1_vm", {
     registry,
@@ -201,6 +304,134 @@ test("collecte s1_vm et retourne un DTO public filtré avec Records", async () =
 
   const serialized = JSON.stringify(result.data);
   assert.doesNotMatch(serialized, /steamID|serverPort|carId|carPosition|playerName|playerFileName/);
+});
+
+test("le DTO expose les secteurs du dernier tour et laisse la qualification absente à null", async () => {
+  const result = await collectLiveTiming("s1_vm", {
+    registry,
+    fetchImpl: fakeFetch(
+      routes({
+        standings: [{
+          ...standing,
+          qualification: 0,
+          carClass: undefined,
+          bestSectorTime1: 40.1,
+          bestSectorTime2: 42.2,
+          lastSectorTime1: 41.111,
+          lastSectorTime2: 43.222,
+        }],
+      }),
+    ),
+    now: () => "2026-09-07T12:00:00.000Z",
+  });
+
+  assert.equal(result.ok, true);
+  const [entry] = result.data.standings;
+  assert.equal(entry.sector1, "0:41.111");
+  assert.equal(entry.sector2, "0:02.111");
+  assert.equal(entry.sector3, "1:23.234");
+  assert.equal(entry.startingPosition, null);
+  assert.equal(entry.carClass, null);
+  assert.equal(entry.fuelFraction, 0.5);
+});
+
+test("les temps sectoriels cumulés sont convertis en durées de secteurs", async () => {
+  const result = await collectLiveTiming("s1_vm", {
+    registry,
+    fetchImpl: fakeFetch(
+      routes({
+        standings: [{
+          ...standing,
+          lapsCompleted: 1,
+          lastLapTime: 110.379,
+          lastSectorTime1: 25.641,
+          lastSectorTime2: 67.767,
+        }],
+      }),
+    ),
+  });
+
+  assert.equal(result.ok, true);
+  const [entry] = result.data.standings;
+  assert.equal(entry.sector1, "0:25.641");
+  assert.equal(entry.sector2, "0:42.126");
+  assert.equal(entry.sector3, "0:42.612");
+});
+
+test("les bornes incohérentes mettent en tiret les secteurs impossibles", async () => {
+  const result = await collectLiveTiming("s1_vm", {
+    registry,
+    fetchImpl: fakeFetch(
+      routes({
+        standings: [{
+          ...standing,
+          lapsCompleted: 1,
+          lastLapTime: 100,
+          lastSectorTime1: 60,
+          lastSectorTime2: 50,
+        }],
+      }),
+    ),
+  });
+
+  assert.equal(result.ok, true);
+  const [entry] = result.data.standings;
+  assert.equal(entry.sector1, "1:00.000");
+  assert.equal(entry.sector2, "—");
+  assert.equal(entry.sector3, null);
+});
+
+test("un dernier secteur reste indisponible quand S2 brut dépasse le dernier tour", async () => {
+  const result = await collectLiveTiming("s1_vm", {
+    registry,
+    fetchImpl: fakeFetch(
+      routes({
+        standings: [{
+          ...standing,
+          lapsCompleted: 1,
+          lastLapTime: 110,
+          lastSectorTime1: 25,
+          lastSectorTime2: 120,
+        }],
+      }),
+    ),
+  });
+
+  assert.equal(result.ok, true);
+  const [entry] = result.data.standings;
+  assert.equal(entry.sector1, "0:25.000");
+  assert.equal(entry.sector2, "—");
+  assert.equal(entry.sector3, null);
+});
+
+test("S3 reste indisponible si le dernier tour est incomplet ou incohérent", async () => {
+  const invalidRoutes = routes({
+    standings: [{
+      ...standing,
+      lastLapTime: 100,
+      lastSectorTime1: 60,
+      lastSectorTime2: 50,
+    }],
+  });
+  const invalidResult = await collectLiveTiming("s1_vm", {
+    registry,
+    fetchImpl: fakeFetch(invalidRoutes),
+  });
+  assert.equal(invalidResult.ok, true);
+  assert.equal(invalidResult.data.standings[0].sector3, null);
+
+  const incompleteRoutes = routes({
+    standings: [{
+      ...standing,
+      lastLapTime: -1,
+    }],
+  });
+  const incompleteResult = await collectLiveTiming("s1_vm", {
+    registry,
+    fetchImpl: fakeFetch(incompleteRoutes),
+  });
+  assert.equal(incompleteResult.ok, true);
+  assert.equal(incompleteResult.data.standings[0].sector3, null);
 });
 
 test("le DTO conserve uniquement les états jaunes explicitement confirmés", async () => {
@@ -323,6 +554,31 @@ test("le DTO s20_vm affiche l’uptime Manager sans utiliser le chrono de sessio
   assert.equal(result.data.session.sessionTimeRemaining, "00:00:30");
 });
 
+test("la collecte native S20 directe ne contacte pas le Manager avec un technicalId explicitement vérifié", async () => {
+  const directRoutes = s20Routes();
+  delete directRoutes["http://127.0.0.1:4000/api/view/servers/20"];
+  const requested = [];
+  const fetchImpl = async (url) => {
+    requested.push(url);
+    const route = directRoutes[url];
+    if (!route) throw new Error(`unexpected URL: ${url}`);
+    return response(route.status ?? 200, route.body, route);
+  };
+
+  const result = await collectLiveTiming("s20_vm", {
+    registry: s20Registry,
+    fetchImpl,
+    nativeTrackTechnicalId: "WATKINS_GLEN_BOOT",
+    weatherClientProbe: async () => false,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.degraded, undefined);
+  assert.equal(result.data.server.trackTechnicalId, "WATKINS_GLEN_BOOT");
+  assert.equal(result.data.session.serverUptime, null);
+  assert.equal(requested.some((url) => url.includes(":4000/")), false);
+});
+
 test("le DTO expose la longueur catalogue GDB sans remplacer la lapDistance runtime", async () => {
   const result = await collectLiveTiming("s20_vm", {
     registry: s20Registry,
@@ -441,23 +697,222 @@ test("le formateur rFactor 2 convertit les secondes natives en HH:MM:SS", () => 
   assert.equal(formatRFactorDuration(0), "00:00:00");
 });
 
-test("un classement HTTP 500 bloque la réponse publique sans devenir un tableau vide", async () => {
-  const badRoutes = routes();
-  badRoutes["http://127.0.0.1:5414/rest/watch/standings"] = {
+test("un classement HTTP 500 conserve le contexte source en état dégradé sans fabriquer de pilotes", async () => {
+  const badRoutes = s20Routes();
+  badRoutes["http://127.0.0.1:5354/rest/watch/standings"] = {
     status: 500,
     body: { internal: "must-not-leak" },
   };
 
-  const result = await collectLiveTiming("s1_vm", {
-    registry,
+  const result = await collectLiveTiming("s20_vm", {
+    registry: s20Registry,
+    fetchImpl: fakeFetch(badRoutes),
+    now: () => "2026-09-29T22:00:00.000Z",
+    weatherClientProbe: async () => false,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.degraded, true);
+  assert.equal(result.error, "standings_unavailable");
+  assert.equal(result.standingsFailure, "http_500");
+  assert.equal(result.data.server.status, "degraded");
+  assert.equal(result.data.server.circuit, "Paul Ricard  HTTT");
+  assert.equal(result.data.server.currentSession, "Essais libres 1");
+  assert.equal(result.data.server.driversCount, null);
+  assert.equal(result.data.server.lapsCompleted, null);
+  assert.deepEqual(result.data.standings, []);
+  assert.equal(result.data.session.phase, "practice");
+});
+
+test("un classement Watch indisponible utilise les 8 lignes Shared Memory seulement si toutes les associations sont vérifiées", async () => {
+  const badRoutes = s20Routes({
+    sessionBody: { ...sessionInfo, numberOfVehicles: 8, lapDistance: 5463 },
+  });
+  badRoutes["http://127.0.0.1:5354/rest/watch/standings"] = { status: 500, body: {} };
+  const result = await collectLiveTiming("s20_vm", {
+    registry: s20Registry,
+    fetchImpl: fakeFetch(badRoutes),
+    sharedMemoryReader: async () => ({
+      stable: true,
+      scoringVehicleCount: 8,
+      telemetryVehicleCount: 8,
+      matchedVehicleCount: 8,
+      vehicles: [
+        { slotID: 21, mID: 21, control: 2, driverName: "Human One", vehicleName: "Car A", carClass: "GT3", position: 1, lapsCompleted: 8, lastLapTime: 90, bestLapTime: 89, lapDistance: 4100 },
+        { slotID: 22, mID: 22, control: 2, driverName: "Human Two", vehicleName: "Car B", carClass: "GT4", position: 2, lapsCompleted: 7, lastLapTime: 92, bestLapTime: 91, lapDistance: 3700 },
+        { slotID: 23, mID: 23, control: 1, driverName: "AI Three", vehicleName: "Car C", carClass: "GT3", position: 3, lapsCompleted: 8, lastLapTime: 93, bestLapTime: 92, lapDistance: 3000 },
+        { slotID: 24, mID: 24, control: 1, driverName: "AI Four", vehicleName: "Car D", carClass: "GT3", position: 4, lapsCompleted: 7, lastLapTime: 94, bestLapTime: 93, lapDistance: 2900 },
+        { slotID: 25, mID: 25, control: 1, driverName: "AI Five", vehicleName: "Car E", carClass: "GT4", position: 5, lapsCompleted: 7, lastLapTime: 95, bestLapTime: 94, lapDistance: 2800 },
+        { slotID: 26, mID: 26, control: 1, driverName: "AI Six", vehicleName: "Car F", carClass: "GT4", position: 6, lapsCompleted: 6, lastLapTime: 96, bestLapTime: 95, lapDistance: 2700 },
+        { slotID: 27, mID: 27, control: 2, driverName: "Human Seven", vehicleName: "Car G", carClass: "GT3", position: 7, lapsCompleted: 6, lastLapTime: 97, bestLapTime: 96, lapDistance: 2600 },
+        { slotID: 28, mID: 28, control: 1, driverName: "AI Eight", vehicleName: "Car H", carClass: "GT4", position: 8, lapsCompleted: 5, lastLapTime: 98, bestLapTime: 97, lapDistance: 2500 },
+      ],
+    }),
+    weatherClientProbe: async () => false,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.degraded, false);
+  assert.equal(result.warning, "native_shared_memory_fallback");
+  assert.equal(result.data.server.status, "online");
+  assert.equal(result.data.server.standingsUnavailableReason, "http_500");
+  assert.equal(result.data.server.standingsSource, "shared_memory_scoring");
+  assert.equal(result.data.server.driversCount, 8);
+  assert.deepEqual(result.data.standings.map((row) => row.position), [1, 2, 3, 4, 5, 6, 7, 8]);
+  assert.equal(result.data.standings.filter((row) => row.driverType === "human").length, 3);
+  assert.equal(result.data.standings.filter((row) => row.driverType === "ai").length, 5);
+  assert.deepEqual(result.data.standings.filter((row) => row.driverType === "human").map(({position}) => position), [1, 2, 7]);
+  assert.doesNotMatch(JSON.stringify(result.data), /slotID|mID|steamID|control/);
+});
+
+test("un snapshot Shared Memory instable n’alimente pas le classement", async () => {
+  const badRoutes = s20Routes({
+    sessionBody: { ...sessionInfo, numberOfVehicles: 1 },
+  });
+  badRoutes["http://127.0.0.1:5354/rest/watch/standings"] = { status: 500, body: {} };
+  const result = await collectLiveTiming("s20_vm", {
+    registry: s20Registry,
+    fetchImpl: fakeFetch(badRoutes),
+    sharedMemoryReader: async () => ({
+      stable: false,
+      scoringVehicleCount: 1,
+      telemetryVehicleCount: 1,
+      matchedVehicleCount: 1,
+      vehicles: [{ slotID: 1, mID: 1, control: 2, driverName: "Must Not Show", vehicleName: "Car", carClass: "GT3", position: 1 }],
+    }),
+    weatherClientProbe: async () => false,
+  });
+
+  assert.equal(result.data.server.standingsSource, "unavailable");
+  assert.equal(result.data.server.driversCount, null);
+  assert.match(result.data.server.standingsUnavailableReason, /Trame Shared Memory indisponible ou instable/);
+  assert.deepEqual(result.data.standings, []);
+});
+
+test("un mID différent du slotID refuse le fallback sans inventer une identité", async () => {
+  const badRoutes = s20Routes({ sessionBody: { ...sessionInfo, numberOfVehicles: 1 } });
+  badRoutes["http://127.0.0.1:5354/rest/watch/standings"] = { status: 500, body: {} };
+  const result = await collectLiveTiming("s20_vm", {
+    registry: s20Registry,
+    fetchImpl: fakeFetch(badRoutes),
+    sharedMemoryReader: async () => ({
+      stable: true,
+      scoringVehicleCount: 1,
+      telemetryVehicleCount: 1,
+      matchedVehicleCount: 1,
+      vehicles: [{ slotID: 5, mID: 6, control: 2, driverName: "Unverified", vehicleName: "Car", carClass: "GT3", position: 1 }],
+    }),
+    weatherClientProbe: async () => false,
+  });
+  assert.equal(result.data.server.standingsSource, "unavailable");
+  assert.deepEqual(result.data.standings, []);
+  assert.equal(result.data.server.driversCount, null);
+  assert.match(result.data.server.standingsUnavailableReason, /Association native slotID\/mID non vérifiée/);
+  assert.doesNotMatch(result.data.server.standingsUnavailableReason, /5|6|Unverified/);
+});
+
+test("un classement JSON de forme inattendue est classifié en interne sans fuite publique", async () => {
+  const badRoutes = s20Routes();
+  badRoutes["http://127.0.0.1:5354/rest/watch/standings"] = {
+    status: 200,
+    body: { vehicles: "must-not-leak" },
+  };
+
+  const result = await collectLiveTiming("s20_vm", {
+    registry: s20Registry,
+    fetchImpl: fakeFetch(badRoutes),
+    weatherClientProbe: async () => false,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.degraded, true);
+  assert.equal(result.standingsFailure, "unexpected_shape");
+  assert.deepEqual(result.data.standings, []);
+});
+
+test("un classement JSON illisible est classifié en interne sans fuite publique", async () => {
+  const badRoutes = s20Routes();
+  badRoutes["http://127.0.0.1:5354/rest/watch/standings"] = {
+    status: 200,
+    parseError: true,
+  };
+
+  const result = await collectLiveTiming("s20_vm", {
+    registry: s20Registry,
+    fetchImpl: fakeFetch(badRoutes),
+    weatherClientProbe: async () => false,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.standingsFailure, "invalid_json");
+  assert.deepEqual(result.data.standings, []);
+});
+
+test("un timeout standings est classifié en interne sans fuite publique", async () => {
+  const baseFetch = fakeFetch(s20Routes());
+  const fetchImpl = async (url, options) => {
+    if (!url.endsWith("/rest/watch/standings")) return baseFetch(url, options);
+    return new Promise((_resolve, reject) => {
+      options.signal.addEventListener("abort", () => {
+        const error = new Error("aborted");
+        error.name = "AbortError";
+        reject(error);
+      }, { once: true });
+    });
+  };
+
+  const result = await collectLiveTiming("s20_vm", {
+    registry: s20Registry,
+    fetchImpl,
+    timeoutMs: 1,
+    weatherClientProbe: async () => false,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.standingsFailure, "timeout");
+  assert.deepEqual(result.data.standings, []);
+});
+
+test("la route publique expose explicitement le snapshot dégradé sans exposer l’erreur interne", async () => {
+  const badRoutes = s20Routes();
+  badRoutes["http://127.0.0.1:5354/rest/watch/standings"] = {
+    status: 500,
+    body: { internal: "must-not-leak" },
+  };
+  const handler = createPublicLiveTimingHandler({
+    registry: s20Registry,
+    fetchImpl: fakeFetch(badRoutes),
+    weatherClientProbe: async () => false,
+  });
+  const response = makeJsonResponse();
+  await handler({ method: "GET", url: "/api/public/live-timing/s20_vm" }, response);
+
+  assert.equal(response.statusCode, 200);
+  const payload = JSON.parse(response.body);
+  assert.equal(payload.success, true);
+  assert.equal(payload.degraded, true);
+  assert.equal(payload.data.server.status, "degraded");
+  assert.deepEqual(payload.data.standings, []);
+  assert.doesNotMatch(response.body, /must-not-leak|standingsFailure|upstreamStatus/);
+});
+
+test("une indisponibilité sessionInfo reste une panne source sans DTO partiel", async () => {
+  const badRoutes = s20Routes();
+  badRoutes["http://127.0.0.1:5354/rest/watch/sessionInfo"] = {
+    status: 503,
+    body: { internal: "must-not-leak" },
+  };
+
+  const result = await collectLiveTiming("s20_vm", {
+    registry: s20Registry,
     fetchImpl: fakeFetch(badRoutes),
   });
 
   assert.deepEqual(result, {
     ok: false,
-    sourceId: "s1_vm",
+    sourceId: "s20_vm",
     status: "error",
-    error: "standings_unavailable",
+    error: "source_unavailable",
   });
 });
 
