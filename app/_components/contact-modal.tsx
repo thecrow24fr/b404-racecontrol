@@ -218,9 +218,9 @@ export function ContactModal({ isOpen, onClose }: ContactModalProps) {
 
   return (
     <>
-      {/* Overlay fixe — le backdrop-blur est ici, sur un element qui ne scroll PAS */}
+      {/* Overlay fixe semi-transparent — sans filtrer la video animee en arriere-plan */}
       <div
-        className={`fixed inset-0 z-[100] bg-black/60 backdrop-blur-[2px] transition-opacity duration-[80ms] ${
+        className={`fixed inset-0 z-[100] bg-black/60 transition-opacity duration-[80ms] ${
           isOpen && !isAnimating ? "opacity-100" : "opacity-0"
         }`}
         onClick={handleClose}
