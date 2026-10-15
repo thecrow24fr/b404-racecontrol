@@ -5,6 +5,15 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      operation:
+        description: "Preflight only, or deploy after review"
+        type: choice
+        options:
+          - preflight
+          - deploy
+        default: preflight
+        required: true
 
 permissions:
   contents: read
@@ -78,5 +87,9 @@ jobs:
             exit 1
           fi
 
+      - name: Read-only SFTP preflight (no remote writes)
+        run: python scripts/deploy_ovh_additive.py --preflight-only
+
       - name: Upload static files to OVH (additive only)
+        if: ${{ (github.event_name == 'workflow_dispatch' && inputs.operation == 'deploy') || (github.event_name == 'push' && contains(github.event.head_commit.message, '[ovh-deploy]')) }}
         run: python scripts/deploy_ovh_additive.py
