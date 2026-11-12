@@ -5,14 +5,20 @@ import hashlib
 import hmac
 import os
 import posixpath
+import re
 import stat
 import sys
 from dataclasses import dataclass
+from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath
 from typing import Iterable
+from urllib.parse import unquote, urlsplit
 
 
 PROTECTED_ROOT_NAMES = {"email.php", "config.php"}
+LIVE_ENTRY_PAGES = (PurePosixPath("index.html"), PurePosixPath("live-timing/index.html"))
+CSS_URL_RE = re.compile(r"url\(\s*['\"]?([^'\")\s]+)")
+STATIC_RSC_ASSET_RE = re.compile(r"(/_next/static/[^\"'\s<>]+)")
 
 
 @dataclass
@@ -43,17 +49,118 @@ def verify_host_fingerprint(host_key: object, expected: str) -> bool:
     return hmac.compare_digest("SHA256:" + digest, expected.strip())
 
 
-def _local_files(source_root: Path) -> Iterable[tuple[Path, PurePosixPath]]:
+class _HtmlResourceParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.references: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        values = {name.lower(): value for name, value in attrs if value is not None}
+        if tag == "script" and values.get("src"):
+            self.references.append(values["src"])
+        elif tag in {"img", "video", "source", "audio", "track", "iframe"}:
+            self.references.extend(values[name] for name in ("src", "poster") if values.get(name))
+        elif tag == "link":
+            rel = set(values.get("rel", "").lower().split())
+            if rel.intersection({"stylesheet", "icon", "preload", "modulepreload"}) and values.get("href"):
+                self.references.append(values["href"])
+        style = values.get("style")
+        if style:
+            self.references.extend(CSS_URL_RE.findall(style))
+
+
+def _path_from_resource_url(value: str) -> PurePosixPath | None:
+    parsed = urlsplit(value.strip())
+    if parsed.scheme or parsed.netloc or not parsed.path.startswith("/"):
+        return None
+    decoded = unquote(parsed.path)
+    if decoded in {"/", "/live-timing", "/live-timing/", "/live-timing/index.html"}:
+        return None
+    relative = PurePosixPath(decoded.lstrip("/"))
+    if not relative.parts or any(part in {".", ".."} for part in relative.parts):
+        raise ValueError(f"unsafe static asset reference: {value}")
+    if relative.parts[0] == "api" or relative.suffix.lower() == ".html":
+        return None
+    return relative
+
+
+def _live_entry_files(source_root: Path) -> set[PurePosixPath]:
+    """Return only the home/Live Timing pages and their directly referenced assets."""
     root = source_root.resolve(strict=True)
     if not root.is_dir():
         raise ValueError("static export directory is missing")
-    for path in sorted(root.rglob("*")):
+
+    files: set[PurePosixPath] = set(LIVE_ENTRY_PAGES)
+    pending = list(LIVE_ENTRY_PAGES)
+    for page in LIVE_ENTRY_PAGES:
+        if not (root / Path(*page.parts)).is_file():
+            raise FileNotFoundError(root / Path(*page.parts))
+
+    # Static App Router exports store client-navigation payloads alongside the
+    # two HTML entry routes. Include only those route-local RSC files.
+    rsc_files = [*root.glob("__next.*.txt")]
+    if (root / "index.txt").is_file():
+        rsc_files.append(root / "index.txt")
+    live_route = root / "live-timing"
+    if live_route.is_dir():
+        rsc_files.extend(live_route.rglob("*.txt"))
+    for path in rsc_files:
+        if path.is_symlink():
+            raise ValueError(f"symlinks are not allowed in static export: {path}")
         relative = PurePosixPath(path.relative_to(root).as_posix())
-        if relative.parts and relative.parts[0] == "api":
+        files.add(relative)
+        pending.append(relative)
+
+    while pending:
+        relative = pending.pop()
+        path = root / Path(*relative.parts)
+        if path.is_symlink():
+            raise ValueError(f"symlinks are not allowed in static export: {relative}")
+        content = path.read_text(encoding="utf-8", errors="replace")
+        if relative.suffix.lower() == ".html":
+            parser = _HtmlResourceParser()
+            parser.feed(content)
+            references = parser.references
+        elif relative.suffix.lower() == ".css":
+            references = CSS_URL_RE.findall(content)
+        elif relative.suffix.lower() == ".txt":
+            references = STATIC_RSC_ASSET_RE.findall(content)
+        else:
             continue
+
+        for reference in references:
+            asset = _path_from_resource_url(reference)
+            if asset is None or asset in files:
+                continue
+            asset_path = root / Path(*asset.parts)
+            if not asset_path.is_file():
+                raise FileNotFoundError(f"referenced asset is missing: {asset}")
+            if asset_path.is_symlink():
+                raise ValueError(f"symlinks are not allowed in static export: {asset}")
+            files.add(asset)
+            if asset.suffix.lower() == ".css":
+                pending.append(asset)
+
+    return files
+
+
+def _local_files(source_root: Path, *, live_entry_only: bool = False) -> Iterable[tuple[Path, PurePosixPath]]:
+    root = source_root.resolve(strict=True)
+    if not root.is_dir():
+        raise ValueError("static export directory is missing")
+    selected = _live_entry_files(root) if live_entry_only else None
+    candidates = (
+        (root / Path(*relative.parts) for relative in sorted(selected))
+        if selected is not None
+        else root.rglob("*")
+    )
+    for path in candidates:
+        relative = PurePosixPath(path.relative_to(root).as_posix())
         if path.is_symlink():
             raise ValueError(f"symlinks are not allowed in static export: {relative}")
         if path.is_file():
+            if relative.parts and relative.parts[0] == "api":
+                continue
             if path.name in PROTECTED_ROOT_NAMES:
                 continue
             yield path, relative
@@ -95,13 +202,17 @@ def upload_static_tree(
     source_root: Path | str,
     remote_root: str,
     progress: DeploymentProgress | None = None,
+    *,
+    live_entry_only: bool = False,
 ) -> int:
+    # Validate and resolve the complete upload list before touching the remote root.
+    local_files = list(_local_files(Path(source_root), live_entry_only=live_entry_only))
     if progress is not None:
         progress.stage = "remote_root_validation"
     target_root = verify_remote_root(sftp, remote_root)
 
     uploaded = 0
-    for local_path, relative in _local_files(Path(source_root)):
+    for local_path, relative in local_files:
         if progress is not None:
             progress.stage = "remote_directory_prepare"
             progress.current_file = relative.as_posix()
@@ -140,7 +251,10 @@ def _required_environment() -> dict[str, str]:
 
 
 def deploy_from_environment(
-    *, preflight_only: bool = False, progress: DeploymentProgress | None = None
+    *,
+    preflight_only: bool = False,
+    progress: DeploymentProgress | None = None,
+    live_entry_only: bool = False,
 ) -> int:
     progress = progress if progress is not None else DeploymentProgress()
     progress.stage = "configuration"
@@ -157,6 +271,8 @@ def deploy_from_environment(
     source_root = Path(__file__).resolve().parents[1] / "out"
     if not (source_root / "index.html").is_file():
         raise ValueError("static export out/index.html is missing")
+    if live_entry_only:
+        _live_entry_files(source_root)
 
     progress.stage = "paramiko_import"
     try:
@@ -186,7 +302,11 @@ def deploy_from_environment(
                 progress.stage = "preflight_complete"
                 return 0
             return upload_static_tree(
-                sftp, source_root, config["OVH_TARGET_DIR"], progress=progress
+                sftp,
+                source_root,
+                config["OVH_TARGET_DIR"],
+                progress=progress,
+                live_entry_only=live_entry_only,
             )
         finally:
             sftp.close()
@@ -222,10 +342,19 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="connect and validate the remote root without creating or uploading files",
     )
+    parser.add_argument(
+        "--live-entry-only",
+        action="store_true",
+        help="upload only the home page, /live-timing/, and resources they reference",
+    )
     args = parser.parse_args(argv)
     progress = DeploymentProgress()
     try:
-        count = deploy_from_environment(preflight_only=args.preflight_only, progress=progress)
+        count = deploy_from_environment(
+            preflight_only=args.preflight_only,
+            progress=progress,
+            live_entry_only=args.live_entry_only,
+        )
     except Exception as exc:  # Never include exception text or secret-bearing settings in CI logs.
         summary = format_failure(exc, progress)
         print(summary, file=sys.stderr)

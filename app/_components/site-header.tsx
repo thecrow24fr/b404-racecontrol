@@ -4,7 +4,11 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { ContactModal } from "./contact-modal";
 
-export function SiteHeader() {
+interface SiteHeaderProps {
+  showPrimaryNavigation?: boolean;
+}
+
+export function SiteHeader({ showPrimaryNavigation = true }: SiteHeaderProps = {}) {
   const [isScrolled, setIsScrolled] = useState(false);
   const [isContactOpen, setIsContactOpen] = useState(false);
 
@@ -14,7 +18,6 @@ export function SiteHeader() {
     };
 
     window.addEventListener("scroll", handleScroll, { passive: true });
-
     return () => window.removeEventListener("scroll", handleScroll);
   }, []);
 
@@ -35,37 +38,44 @@ export function SiteHeader() {
             </p>
           </Link>
 
-          <nav className="hidden items-center gap-6 text-sm font-semibold uppercase tracking-wide text-gray-300 md:flex">
-            <a href="#servers" className="transition hover:text-orange-300">
-              Serveurs
-            </a>
-            <a href="#about" className="transition hover:text-orange-300">
-              &Agrave; propos
-            </a>
-            <button
-              type="button"
-              onClick={() => setIsContactOpen(true)}
-              className="rounded-full border border-orange-400/40 px-4 py-2 text-orange-200 transition hover:border-orange-300 hover:bg-orange-500/10"
-            >
-              Contact
-            </button>
-            <a
-              href="https://b404ldc.fr"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="rounded-full border border-orange-400/40 px-4 py-2 text-orange-200 transition hover:border-orange-300 hover:bg-orange-500/10"
-            >
-              B404.fr
-            </a>
-          </nav>
-        </div>
-    </header>
+          <div className="ml-auto flex items-center gap-6">
+            {showPrimaryNavigation && (
+              <nav
+                aria-label="Navigation principale RaceControl"
+                className="hidden items-center gap-6 text-sm font-semibold uppercase tracking-wide text-gray-300 md:flex"
+              >
+                <a
+                  href="/live-timing/"
+                  className="rounded-full border border-orange-400/40 bg-orange-500/10 px-4 py-2 text-orange-200 transition hover:border-orange-300 hover:bg-orange-500/20"
+                >
+                  LIVE
+                </a>
+                <a href="#about" className="transition hover:text-orange-300">
+                  &Agrave; propos
+                </a>
+              </nav>
+            )}
 
-      <ContactModal
-        isOpen={isContactOpen}
-        onClose={() => setIsContactOpen(false)}
-      />
+            <div className="hidden items-center gap-3 md:flex">
+              <button
+                type="button"
+                onClick={() => setIsContactOpen(true)}
+                className="rounded-full border border-orange-400/40 px-4 py-2 text-orange-200 transition hover:border-orange-300 hover:bg-orange-500/10"
+              >
+                Contact
+              </button>
+              <a
+                href="https://b404ldc.fr"
+                className="rounded-full border border-orange-400/40 px-4 py-2 text-orange-200 transition hover:border-orange-300 hover:bg-orange-500/10"
+              >
+                B404.fr
+              </a>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <ContactModal isOpen={isContactOpen} onClose={() => setIsContactOpen(false)} />
     </>
   );
 }
-

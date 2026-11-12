@@ -20,7 +20,7 @@ export type SessionPhase =
   | "paused";
 
 /** Statut d'un serveur (étend le StatusType existant) */
-export type ServerStatus = "online" | "offline" | "starting" | "paused";
+export type ServerStatus = "online" | "offline" | "starting" | "paused" | "stale" | "degraded";
 
 /** Type de drapeau affiché en piste */
 export type FlagType =
@@ -40,18 +40,18 @@ export type DriverStatus =
   | "dnf";
 
 /** Catégorie de voiture */
-export type CarCategory = "GT3" | "Hypercar" | "LMP2" | "GT4" | "Porsche Cup";
+export type CarCategory = string;
 
 // ─── Interfaces ───────────────────────────────────────────────────────
 
 /** Informations météo */
 export interface Weather {
   condition: string;
-  temperature: number;
-  windSpeed: number;
-  rainPercent: number;
+  temperature: number | null;
+  windSpeed: number | null;
+  rainPercent: number | null;
   /** Piste sèche / humide / mouillée */
-  trackCondition: "dry" | "damp" | "wet";
+  trackCondition: "dry" | "damp" | "wet" | "unknown";
 }
 
 /** Information d'un drapeau */
@@ -64,40 +64,55 @@ export interface Flag {
 /** Informations générales du serveur de course */
 export interface ServerInfo {
   id: string;
+  sourceId?: string;
   name: string;
   circuit: string;
   category: CarCategory;
   weather: Weather;
-  driversCount: number;
-  maxDrivers: number;
+  driversCount: number | null;
+  maxDrivers: number | null;
   currentSession: string;
   timeRemaining: string;
   totalSessionTime: string;
-  lapsCompleted: number;
-  totalLaps: number;
+  lapsCompleted: number | null;
+  totalLaps: number | null;
   status: ServerStatus;
 }
 
 /** Une entrée du classement (un pilote) */
 export interface StandingEntry {
   position: number;
+  participantId?: string;
+  startingPosition?: number | null;
   prevPosition: number;
   driverName: string;
   team: string;
   car: string;
   /** Numéro de la voiture (disponible via API rF2) */
   carNumber?: string;
-  carClass: CarCategory;
+  carClass: CarCategory | null;
   laps: number;
   /** Écart au leader ("Leader" pour le premier) */
   gapToLeader: string;
   /** Écart au pilote précédent */
   gapToNext: string;
+  timeBehindNext?: number | null;
   bestLap: string;
   lastLap: string;
+  bestLapSector1?: string | null;
+  bestLapSector2?: string | null;
+  bestLapSector3?: string | null;
+  lastLapSector1?: string | null;
+  lastLapSector2?: string | null;
+  lastLapSector3?: string | null;
   sector1: string;
   sector2: string;
-  sector3: string;
+  sector3: string | null;
+  optimalLap?: string | null;
+  maxSpeedKmh?: number | null;
+  frontTyreCompound?: string | null;
+  rearTyreCompound?: string | null;
+  fuelFraction?: number | null;
   inPit: boolean;
   status: DriverStatus;
   /** Nombre d'arrêts au stand */
@@ -118,8 +133,8 @@ export interface StandingEntry {
 export interface SessionInfo {
   phase: SessionPhase;
   serverTime: string;
-  trackTemp: number;
-  airTemp: number;
+  trackTemp: number | null;
+  airTemp: number | null;
   flags: Flag[];
   elapsedTime: string;
 }
@@ -136,6 +151,8 @@ export interface TelemetryPoint {
 
 /** Données complètes du Live Timing pour un serveur */
 export interface LiveTimingData {
+  sourceId?: string;
+  fetchedAt?: string;
   server: ServerInfo;
   session: SessionInfo;
   standings: StandingEntry[];

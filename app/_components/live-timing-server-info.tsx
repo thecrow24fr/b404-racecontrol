@@ -11,6 +11,7 @@ import {
   CircleDot,
 } from "lucide-react";
 import type { ServerInfo } from "../_types/live-timing";
+import { raceProgress } from "../_services/live-timing-table-model.mjs";
 
 interface ServerInfoPanelProps {
   server: ServerInfo;
@@ -26,6 +27,8 @@ export function ServerInfoPanel({ server }: ServerInfoPanelProps) {
     offline: "Hors ligne",
     starting: "Démarrage…",
     paused: "En pause",
+    stale: "Données en retard",
+    degraded: "Données partielles",
   };
 
   const statusColor: Record<string, string> = {
@@ -33,6 +36,8 @@ export function ServerInfoPanel({ server }: ServerInfoPanelProps) {
     offline: "text-gray-400",
     starting: "text-yellow-400",
     paused: "text-yellow-300",
+    stale: "text-amber-300",
+    degraded: "text-amber-300",
   };
 
   const statusDotColor: Record<string, string> = {
@@ -40,19 +45,38 @@ export function ServerInfoPanel({ server }: ServerInfoPanelProps) {
     offline: "bg-gray-500",
     starting: "bg-yellow-400",
     paused: "bg-yellow-300",
+    stale: "bg-amber-300",
+    degraded: "bg-amber-300",
   };
 
   const trackConditionLabel: Record<string, string> = {
     dry: "Sèche",
     damp: "Humide",
     wet: "Mouillée",
+    unknown: "Inconnue",
   };
 
   const trackConditionColor: Record<string, string> = {
     dry: "text-orange-300",
     damp: "text-blue-300",
     wet: "text-blue-400",
+    unknown: "text-gray-400",
   };
+  const driversLabel =
+    server.driversCount !== null && server.maxDrivers !== null
+      ? `${server.driversCount} / ${server.maxDrivers}`
+      : "—";
+  const temperatureLabel =
+    server.weather.temperature === null ? "—" : `${server.weather.temperature}°C`;
+  const windLabel =
+    server.weather.windSpeed === null ? "—" : `${server.weather.windSpeed} km/h`;
+  const rainLabel =
+    server.weather.rainPercent === null ? "—" : `${server.weather.rainPercent}%`;
+  const lapsLabel =
+    server.lapsCompleted !== null && server.totalLaps !== null
+      ? `${server.lapsCompleted} / ${server.totalLaps} tours`
+      : "— tours";
+  const progress = raceProgress(server);
 
   return (
     <section className="border-b border-white/10 bg-[#06101d]">
@@ -93,14 +117,14 @@ export function ServerInfoPanel({ server }: ServerInfoPanelProps) {
             icon={<Timer className="h-4 w-4 text-orange-400" />}
             label="Session"
             value={server.currentSession}
-            sub={`${server.timeRemaining} restant`}
+            sub={progress.label}
           />
 
           {/* Pilotes */}
           <InfoCard
             icon={<Users className="h-4 w-4 text-orange-400" />}
             label="Pilotes"
-            value={`${server.driversCount} / ${server.maxDrivers}`}
+            value={driversLabel}
             sub="engagés"
           />
 
@@ -115,8 +139,8 @@ export function ServerInfoPanel({ server }: ServerInfoPanelProps) {
           <InfoCard
             icon={<CloudSun className="h-4 w-4 text-orange-400" />}
             label="Météo"
-            value={server.weather.condition}
-            sub={`${server.weather.temperature}°C`}
+            value={server.weather.condition || "—"}
+            sub={temperatureLabel}
           />
 
           {/* État de la piste */}
@@ -131,15 +155,20 @@ export function ServerInfoPanel({ server }: ServerInfoPanelProps) {
           <InfoCard
             icon={<Wind className="h-4 w-4 text-orange-400" />}
             label="Vent"
-            value={`${server.weather.windSpeed} km/h`}
+            value={windLabel}
           />
 
-          {/* Pluie + Tours */}
+          {/* Pluie */}
           <InfoCard
             icon={<Thermometer className="h-4 w-4 text-orange-400" />}
-            label="Pluie / Tours"
-            value={`${server.weather.rainPercent}%`}
-            sub={`${server.lapsCompleted} / ${server.totalLaps} tours`}
+            label="Pluie"
+            value={rainLabel}
+          />
+          <InfoCard
+            icon={<Timer className="h-4 w-4 text-orange-400" />}
+            label="Progression course"
+            value={progress.label}
+            sub={progress.remaining ?? (progress.mode === "time" ? "Course au temps" : lapsLabel)}
           />
         </div>
       </div>

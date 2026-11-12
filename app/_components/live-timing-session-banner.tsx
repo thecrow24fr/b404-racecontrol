@@ -34,8 +34,6 @@ export function SessionBanner({ session }: SessionBannerProps) {
   };
 
   const hasActiveFlags = session.flags.length > 0;
-  const activeYellow = session.flags.find((f) => f.type === "yellow");
-  const activeRed = session.flags.find((f) => f.type === "red");
 
   return (
     <div className="border-y border-white/10 bg-[#0b1728]">
@@ -59,11 +57,11 @@ export function SessionBanner({ session }: SessionBannerProps) {
           <div className="flex items-center gap-4">
             <span className="flex items-center gap-1.5 text-xs text-gray-400">
               <Thermometer className="h-3.5 w-3.5 text-orange-400" />
-              Piste <span className="font-bold text-white">{session.trackTemp}°C</span>
+              Piste <span className="font-bold text-white">{session.trackTemp === null ? "—" : `${session.trackTemp}°C`}</span>
             </span>
             <span className="flex items-center gap-1.5 text-xs text-gray-400">
               <Thermometer className="h-3.5 w-3.5 text-blue-400" />
-              Air <span className="font-bold text-white">{session.airTemp}°C</span>
+              Air <span className="font-bold text-white">{session.airTemp === null ? "—" : `${session.airTemp}°C`}</span>
             </span>
           </div>
 
@@ -86,6 +84,8 @@ export function SessionBanner({ session }: SessionBannerProps) {
                   {flag.type === "red" && "Drapeau rouge"}
                   {flag.type === "green" && "Drapeau vert"}
                   {flag.type === "chequered" && "Drapeau à damiers"}
+                  {flag.type === "blue" && "Drapeau bleu"}
+                  {flag.type === "white" && "Drapeau blanc"}
                   <span className="opacity-60">S{flag.sector}</span>
                   {flag.reason && (
                     <span className="hidden italic opacity-60 sm:inline">

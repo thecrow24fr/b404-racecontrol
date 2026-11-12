@@ -173,6 +173,90 @@ class AdditiveDeployTests(unittest.TestCase):
         self.assertTrue(verify_host_fingerprint(key, expected))
         self.assertFalse(verify_host_fingerprint(key, "SHA256:wrong"))
 
+    def test_live_entry_scope_uploads_only_home_live_page_and_referenced_assets(self):
+        remote_root = "/home/bldcffr/racecontrol"
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp)
+            (source / "index.html").write_text(
+                '<link rel="stylesheet" href="/_next/static/site.css"><script src="/_next/static/home.js"></script>'
+                '<video src="/videos/hero.mp4"></video><a href="/admin/serveurs/">admin</a>',
+                encoding="utf-8",
+            )
+            (source / "live-timing").mkdir()
+            (source / "live-timing/index.html").write_text(
+                '<link rel="stylesheet" href="/_next/static/site.css"><script src="/_next/static/live.js"></script>'
+                '<a href="/">Accueil</a>',
+                encoding="utf-8",
+            )
+            (source / "__next._tree.txt").write_text(
+                '"/_next/static/root-rsc.js"', encoding="utf-8"
+            )
+            (source / "live-timing/__next._tree.txt").write_text(
+                '"/_next/static/live-rsc.js"', encoding="utf-8"
+            )
+            (source / "live-timing/__next.live-timing").mkdir(parents=True)
+            (source / "live-timing/__next.live-timing/__PAGE__.txt").write_text(
+                '"/_next/static/live-page.js"', encoding="utf-8"
+            )
+            (source / "admin/serveurs").mkdir(parents=True)
+            (source / "admin/serveurs/index.html").write_text("must-not-upload", encoding="utf-8")
+            (source / "admin/serveurs/__next._tree.txt").write_text(
+                '"/_next/static/admin-rsc.js"', encoding="utf-8"
+            )
+            (source / "test-api").mkdir()
+            (source / "test-api/index.html").write_text("must-not-upload", encoding="utf-8")
+            (source / "api").mkdir()
+            (source / "api/health.html").write_text("must-not-upload", encoding="utf-8")
+            (source / "videos").mkdir()
+            (source / "videos/hero.mp4").write_bytes(b"video")
+            (source / "_next/static").mkdir(parents=True)
+            (source / "_next/static/site.css").write_text(
+                'body{background:url("/_next/static/font.woff2")}', encoding="utf-8"
+            )
+            (source / "_next/static/home.js").write_text("home", encoding="utf-8")
+            (source / "_next/static/live.js").write_text("live", encoding="utf-8")
+            (source / "_next/static/root-rsc.js").write_text("root-rsc", encoding="utf-8")
+            (source / "_next/static/live-rsc.js").write_text("live-rsc", encoding="utf-8")
+            (source / "_next/static/live-page.js").write_text("live-page", encoding="utf-8")
+            (source / "_next/static/admin-rsc.js").write_text("admin-rsc", encoding="utf-8")
+            (source / "_next/static/font.woff2").write_bytes(b"font")
+            (source / "_next/static/admin.js").write_text("admin", encoding="utf-8")
+
+            sftp = FakeSFTP(remote_root)
+            upload_static_tree(sftp, source, remote_root, live_entry_only=True)
+
+        uploaded = {path.removeprefix(remote_root + "/") for path in sftp.uploaded}
+        self.assertEqual(uploaded, {
+            "index.html",
+            "live-timing/index.html",
+            "__next._tree.txt",
+            "live-timing/__next._tree.txt",
+            "live-timing/__next.live-timing/__PAGE__.txt",
+            "videos/hero.mp4",
+            "_next/static/site.css",
+            "_next/static/home.js",
+            "_next/static/live.js",
+            "_next/static/root-rsc.js",
+            "_next/static/live-rsc.js",
+            "_next/static/live-page.js",
+            "_next/static/font.woff2",
+        })
+        self.assertNotIn("admin/serveurs/index.html", uploaded)
+        self.assertNotIn("test-api/index.html", uploaded)
+        self.assertFalse(any(path.startswith("api/") for path in uploaded))
+
+    def test_live_entry_scope_requires_both_public_entry_pages_before_upload(self):
+        remote_root = "/home/bldcffr/racecontrol"
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp)
+            (source / "index.html").write_text("home", encoding="utf-8")
+            sftp = FakeSFTP(remote_root)
+
+            with self.assertRaises(FileNotFoundError):
+                upload_static_tree(sftp, source, remote_root, live_entry_only=True)
+
+        self.assertEqual(sftp.uploaded, [])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -24,7 +24,7 @@ concurrency:
 
 jobs:
   build-and-deploy:
-    name: Build and additively upload static export
+    name: Build and additively upload RaceControl home + Live Timing
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -58,7 +58,7 @@ jobs:
           test -d out
           test -f out/index.html
           test "$(find out -type f | wc -l)" -gt 0
-          node --test tests/contact-modal-performance.test.mjs
+          node --test tests/contact-modal-performance.test.mjs tests/live-timing-table-model.test.mjs tests/public-live-timing-api-url.test.mjs tests/public-live-timing-contract.test.mjs
 
       - name: Set up Python for safe SFTP upload
         uses: actions/setup-python@v5
@@ -88,8 +88,8 @@ jobs:
           fi
 
       - name: Read-only SFTP preflight (no remote writes)
-        run: python scripts/deploy_ovh_additive.py --preflight-only
+        run: python scripts/deploy_ovh_additive.py --live-entry-only --preflight-only
 
       - name: Upload static files to OVH (additive only)
         if: ${{ (github.event_name == 'workflow_dispatch' && inputs.operation == 'deploy') || (github.event_name == 'push' && contains(github.event.head_commit.message, '[ovh-deploy]')) }}
-        run: python scripts/deploy_ovh_additive.py
+        run: python scripts/deploy_ovh_additive.py --live-entry-only
