@@ -232,7 +232,7 @@ def _local_files(
     candidates = (
         (root / Path(*relative.parts) for relative in sorted(selected))
         if selected is not None
-        else root.rglob("*")
+        else sorted(root.rglob("*"), key=lambda path: path.relative_to(root).as_posix())
     )
     for path in candidates:
         relative = PurePosixPath(path.relative_to(root).as_posix())
