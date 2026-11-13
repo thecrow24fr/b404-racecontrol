@@ -43,3 +43,12 @@ next-env.d.ts
 # api
 api/email-errors.log
 api/.rate-*
+
+# Isolated 49349 Live Timing export build artifacts
+/legacy/live-timing-49349/node_modules/
+/legacy/live-timing-49349/.next/
+/legacy/live-timing-49349/out/
+
+# Python test bytecode
+/scripts/__pycache__/
+/tests/__pycache__/

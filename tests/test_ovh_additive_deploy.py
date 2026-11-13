@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -15,6 +16,7 @@ from scripts.deploy_ovh_additive import (  # noqa: E402
     DeploymentProgress,
     check_remote_target,
     format_failure,
+    main,
     upload_static_tree,
     validate_remote_root,
     verify_host_fingerprint,
@@ -256,6 +258,82 @@ class AdditiveDeployTests(unittest.TestCase):
                 upload_static_tree(sftp, source, remote_root, live_entry_only=True)
 
         self.assertEqual(sftp.uploaded, [])
+
+
+    def test_live_timing_only_scope_uploads_route_rsc_and_assets_but_not_home_or_shared_favicon(self):
+        remote_root = "/home/bldcffr/racecontrol"
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp)
+            (source / "index.html").write_text("home", encoding="utf-8")
+            (source / "__next._tree.txt").write_text('"/_next/static/root-rsc.js"', encoding="utf-8")
+            (source / "live-timing").mkdir()
+            (source / "live-timing/index.html").write_text(
+                '<link rel="icon" href="/favicon.ico">'
+                '<link rel="stylesheet" href="/_next/static/live.css">'
+                '<script src="/_next/static/live.js"></script>',
+                encoding="utf-8",
+            )
+            (source / "live-timing/__next._tree.txt").write_text(
+                '"/_next/static/live-tree.js"', encoding="utf-8"
+            )
+            (source / "live-timing/__next.live-timing").mkdir()
+            (source / "live-timing/__next.live-timing/__PAGE__.txt").write_text(
+                '"/_next/static/live-page.js"', encoding="utf-8"
+            )
+            (source / "admin/serveurs").mkdir(parents=True)
+            (source / "admin/serveurs/index.html").write_text("admin", encoding="utf-8")
+            (source / "_next/static").mkdir(parents=True)
+            (source / "_next/static/live.css").write_text(
+                'body{background:url("/_next/static/live-font.woff2")}', encoding="utf-8"
+            )
+            for name in ("live.js", "live-tree.js", "live-page.js", "root-rsc.js"):
+                (source / "_next/static" / name).write_text(name, encoding="utf-8")
+            (source / "_next/static/live-font.woff2").write_bytes(b"font")
+            (source / "favicon.ico").write_bytes(b"shared-site-icon")
+            (source / "cars").mkdir()
+            (source / "cars/david-depoorter-mercedes.png").write_bytes(b"dynamic-car-image")
+
+            sftp = FakeSFTP(remote_root)
+            upload_static_tree(sftp, source, remote_root, live_timing_only=True)
+
+        uploaded = {path.removeprefix(remote_root + "/") for path in sftp.uploaded}
+        self.assertEqual(uploaded, {
+            "live-timing/index.html",
+            "live-timing/__next._tree.txt",
+            "live-timing/__next.live-timing/__PAGE__.txt",
+            "_next/static/live.css",
+            "_next/static/live.js",
+            "_next/static/live-tree.js",
+            "_next/static/live-page.js",
+            "_next/static/live-font.woff2",
+            "cars/david-depoorter-mercedes.png",
+        })
+        self.assertNotIn("index.html", uploaded)
+        self.assertNotIn("favicon.ico", uploaded)
+        self.assertNotIn("_next/static/root-rsc.js", uploaded)
+        self.assertNotIn("admin/serveurs/index.html", uploaded)
+
+    def test_live_timing_only_scope_requires_route_before_any_upload(self):
+        remote_root = "/home/bldcffr/racecontrol"
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp)
+            (source / "index.html").write_text("home", encoding="utf-8")
+            sftp = FakeSFTP(remote_root)
+
+            with self.assertRaises(FileNotFoundError):
+                upload_static_tree(sftp, source, remote_root, live_timing_only=True)
+
+        self.assertEqual(sftp.uploaded, [])
+
+    def test_cli_accepts_a_separate_live_timing_static_export_root(self):
+        with patch("scripts.deploy_ovh_additive.deploy_from_environment", return_value=0) as deploy:
+            self.assertEqual(
+                main(["--source-root", "legacy/live-timing-49349/out", "--live-timing-only", "--preflight-only"]),
+                0,
+            )
+
+        self.assertEqual(deploy.call_args.kwargs["source_root"], "legacy/live-timing-49349/out")
+        self.assertTrue(deploy.call_args.kwargs["live_timing_only"])
 
 
 if __name__ == "__main__":

@@ -17,6 +17,7 @@ from urllib.parse import unquote, urlsplit
 
 PROTECTED_ROOT_NAMES = {"email.php", "config.php"}
 LIVE_ENTRY_PAGES = (PurePosixPath("index.html"), PurePosixPath("live-timing/index.html"))
+LIVE_TIMING_PAGE = PurePosixPath("live-timing/index.html")
 CSS_URL_RE = re.compile(r"url\(\s*['\"]?([^'\")\s]+)")
 STATIC_RSC_ASSET_RE = re.compile(r"(/_next/static/[^\"'\s<>]+)")
 
@@ -144,11 +145,90 @@ def _live_entry_files(source_root: Path) -> set[PurePosixPath]:
     return files
 
 
-def _local_files(source_root: Path, *, live_entry_only: bool = False) -> Iterable[tuple[Path, PurePosixPath]]:
+def _live_timing_files(source_root: Path) -> set[PurePosixPath]:
+    """Return only /live-timing/ and its route-local RSC/static dependencies."""
     root = source_root.resolve(strict=True)
     if not root.is_dir():
         raise ValueError("static export directory is missing")
-    selected = _live_entry_files(root) if live_entry_only else None
+
+    page_path = root / Path(*LIVE_TIMING_PAGE.parts)
+    if not page_path.is_file():
+        raise FileNotFoundError(page_path)
+
+    files: set[PurePosixPath] = {LIVE_TIMING_PAGE}
+    pending: list[PurePosixPath] = [LIVE_TIMING_PAGE]
+    route_dir = root / "live-timing"
+    for path in route_dir.rglob("*.txt"):
+        if path.is_symlink():
+            raise ValueError(f"symlinks are not allowed in static export: {path}")
+        relative = PurePosixPath(path.relative_to(root).as_posix())
+        files.add(relative)
+        pending.append(relative)
+
+    # Car thumbnails are selected from live API data after hydration, so they
+    # are not necessarily present in the server-rendered HTML. Include only
+    # this app's car-image directory in the route-scoped export.
+    cars_dir = root / "cars"
+    if cars_dir.is_dir():
+        for path in cars_dir.rglob("*"):
+            if not path.is_file():
+                continue
+            if path.is_symlink():
+                raise ValueError(f"symlinks are not allowed in static export: {path}")
+            files.add(PurePosixPath(path.relative_to(root).as_posix()))
+
+    while pending:
+        relative = pending.pop()
+        path = root / Path(*relative.parts)
+        if path.is_symlink():
+            raise ValueError(f"symlinks are not allowed in static export: {relative}")
+        content = path.read_text(encoding="utf-8", errors="replace")
+        if relative.suffix.lower() == ".html":
+            parser = _HtmlResourceParser()
+            parser.feed(content)
+            references = parser.references
+        elif relative.suffix.lower() == ".css":
+            references = CSS_URL_RE.findall(content)
+        elif relative.suffix.lower() == ".txt":
+            references = STATIC_RSC_ASSET_RE.findall(content)
+        else:
+            continue
+
+        for reference in references:
+            asset = _path_from_resource_url(reference)
+            # The site-wide favicon is already served by the existing docroot;
+            # never replace it as part of a single-route release.
+            if asset is None or asset in files or asset == PurePosixPath("favicon.ico"):
+                continue
+            asset_path = root / Path(*asset.parts)
+            if not asset_path.is_file():
+                raise FileNotFoundError(f"referenced asset is missing: {asset}")
+            if asset_path.is_symlink():
+                raise ValueError(f"symlinks are not allowed in static export: {asset}")
+            files.add(asset)
+            if asset.suffix.lower() == ".css":
+                pending.append(asset)
+
+    return files
+
+
+def _local_files(
+    source_root: Path,
+    *,
+    live_entry_only: bool = False,
+    live_timing_only: bool = False,
+) -> Iterable[tuple[Path, PurePosixPath]]:
+    root = source_root.resolve(strict=True)
+    if not root.is_dir():
+        raise ValueError("static export directory is missing")
+    if live_entry_only and live_timing_only:
+        raise ValueError("select only one deployment scope")
+    if live_timing_only:
+        selected = _live_timing_files(root)
+    elif live_entry_only:
+        selected = _live_entry_files(root)
+    else:
+        selected = None
     candidates = (
         (root / Path(*relative.parts) for relative in sorted(selected))
         if selected is not None
@@ -204,9 +284,16 @@ def upload_static_tree(
     progress: DeploymentProgress | None = None,
     *,
     live_entry_only: bool = False,
+    live_timing_only: bool = False,
 ) -> int:
     # Validate and resolve the complete upload list before touching the remote root.
-    local_files = list(_local_files(Path(source_root), live_entry_only=live_entry_only))
+    local_files = list(
+        _local_files(
+            Path(source_root),
+            live_entry_only=live_entry_only,
+            live_timing_only=live_timing_only,
+        )
+    )
     if progress is not None:
         progress.stage = "remote_root_validation"
     target_root = verify_remote_root(sftp, remote_root)
@@ -255,6 +342,8 @@ def deploy_from_environment(
     preflight_only: bool = False,
     progress: DeploymentProgress | None = None,
     live_entry_only: bool = False,
+    live_timing_only: bool = False,
+    source_root: str | Path | None = None,
 ) -> int:
     progress = progress if progress is not None else DeploymentProgress()
     progress.stage = "configuration"
@@ -268,11 +357,22 @@ def deploy_from_environment(
         raise ValueError("OVH_PORT is outside the valid TCP port range")
 
     progress.stage = "static_export_validation"
-    source_root = Path(__file__).resolve().parents[1] / "out"
-    if not (source_root / "index.html").is_file():
+    if source_root is None:
+        resolved_source_root = Path(__file__).resolve().parents[1] / "out"
+    else:
+        supplied_source_root = Path(source_root)
+        if not supplied_source_root.is_absolute():
+            supplied_source_root = Path(__file__).resolve().parents[1] / supplied_source_root
+        resolved_source_root = supplied_source_root
+    resolved_source_root = resolved_source_root.resolve(strict=True)
+    if not resolved_source_root.is_dir():
+        raise ValueError("static export directory is missing")
+    if not live_timing_only and not (resolved_source_root / "index.html").is_file():
         raise ValueError("static export out/index.html is missing")
     if live_entry_only:
-        _live_entry_files(source_root)
+        _live_entry_files(resolved_source_root)
+    if live_timing_only:
+        _live_timing_files(resolved_source_root)
 
     progress.stage = "paramiko_import"
     try:
@@ -303,10 +403,11 @@ def deploy_from_environment(
                 return 0
             return upload_static_tree(
                 sftp,
-                source_root,
+                resolved_source_root,
                 config["OVH_TARGET_DIR"],
                 progress=progress,
                 live_entry_only=live_entry_only,
+                live_timing_only=live_timing_only,
             )
         finally:
             sftp.close()
@@ -347,13 +448,26 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="upload only the home page, /live-timing/, and resources they reference",
     )
+    parser.add_argument(
+        "--live-timing-only",
+        action="store_true",
+        help="upload only /live-timing/ and its route-local RSC/static resources; do not upload home",
+    )
+    parser.add_argument(
+        "--source-root",
+        help="static export root (absolute or relative to the repository root; defaults to out/)",
+    )
     args = parser.parse_args(argv)
+    if args.live_entry_only and args.live_timing_only:
+        parser.error("choose only one of --live-entry-only or --live-timing-only")
     progress = DeploymentProgress()
     try:
         count = deploy_from_environment(
             preflight_only=args.preflight_only,
             progress=progress,
             live_entry_only=args.live_entry_only,
+            live_timing_only=args.live_timing_only,
+            source_root=args.source_root,
         )
     except Exception as exc:  # Never include exception text or secret-bearing settings in CI logs.
         summary = format_failure(exc, progress)

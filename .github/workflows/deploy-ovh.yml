@@ -24,7 +24,7 @@ concurrency:
 
 jobs:
   build-and-deploy:
-    name: Build and additively upload RaceControl home + Live Timing
+    name: Build and additively upload Live Timing only
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -44,12 +44,28 @@ jobs:
         with:
           node-version: 22
           cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            legacy/live-timing-49349/package-lock.json
 
       - name: Install Node dependencies
         run: npm ci
 
       - name: Build static export
         run: npm run build
+
+      - name: Install validated 49349 app dependencies
+        run: npm ci
+        working-directory: legacy/live-timing-49349
+
+      - name: Build validated 49349 public Live Timing export
+        run: npm run build
+        working-directory: legacy/live-timing-49349
+        env:
+          NEXT_PUBLIC_LIVE_TIMING_API_URL: https://api.b404ldc.fr
+
+      - name: Verify validated 49349 Live Timing export
+        run: python -m unittest discover -s tests -p 'test_live_timing_49349_public_export.py' -v
 
       - name: Verify static export and targeted UI regression
         shell: bash
@@ -88,8 +104,8 @@ jobs:
           fi
 
       - name: Read-only SFTP preflight (no remote writes)
-        run: python scripts/deploy_ovh_additive.py --live-entry-only --preflight-only
+        run: python scripts/deploy_ovh_additive.py --live-timing-only --source-root legacy/live-timing-49349/out --preflight-only
 
       - name: Upload static files to OVH (additive only)
         if: ${{ (github.event_name == 'workflow_dispatch' && inputs.operation == 'deploy') || (github.event_name == 'push' && contains(github.event.head_commit.message, '[ovh-deploy]')) }}
-        run: python scripts/deploy_ovh_additive.py --live-entry-only
+        run: python scripts/deploy_ovh_additive.py --live-timing-only --source-root legacy/live-timing-49349/out
