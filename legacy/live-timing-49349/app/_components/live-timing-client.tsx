@@ -291,8 +291,6 @@ export function LiveTimingClient({
         flags={data.session.flags}
         sessionName={data.server.currentSession}
         sessionPhase={data.session.phase}
-        pitTimerNow={clockNow}
-        snapshotReceivedMonotonicAt={snapshotReceivedMonotonicAt}
       />
       <SiteFooter />
       <ScrollTopButton />

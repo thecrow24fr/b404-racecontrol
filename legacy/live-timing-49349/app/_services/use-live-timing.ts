@@ -20,6 +20,7 @@ import {
   PublicLiveTimingProvider,
   type LiveTimingSourceId,
 } from "./public-live-timing-provider";
+import { observeLastLapDeltas, withObservedLapDeltas } from "./live-timing-observed-lap-delta.mjs";
 
 export type LiveTimingTransport = "connecting" | "sse" | "reconnecting";
 
@@ -163,6 +164,7 @@ export function useLiveTiming(
   const lastGoodDataRef = useRef<LiveTimingData | null>(
     initialData && !isStandingsSnapshotUnavailable(initialData) ? initialData : null,
   );
+  const lastLapObservationRef = useRef<unknown>(null);
   const countdownAnchorRef = useRef<MonotonicDurationAnchor | null>(null);
   const lastSseSnapshotAtRef = useRef(0);
   const activeSourceIdRef = useRef(sourceId);
@@ -179,6 +181,26 @@ export function useLiveTiming(
     }
     const standingsMotionAvailableNow = hasCurrentStandingsForMotion(normalizedData);
     const standingsUnavailable = !standingsMotionAvailableNow;
+    let enrichedData = normalizedData;
+    if (!standingsUnavailable && Array.isArray(normalizedData.standings)) {
+      const sessionKey = [
+        normalizedData.session.sessionCode?.trim() || normalizedData.server.currentSession,
+        normalizedData.session.phase,
+        normalizedData.session.serverReadyGeneration ?? "generation-unknown",
+        normalizedData.server.trackTechnicalId ?? "track-unknown",
+      ].join(":");
+      const observation = observeLastLapDeltas(
+        lastLapObservationRef.current,
+        normalizedData.standings,
+        sourceId,
+        sessionKey,
+      );
+      lastLapObservationRef.current = observation.state;
+      enrichedData = {
+        ...normalizedData,
+        standings: withObservedLapDeltas(normalizedData.standings, observation.deltas),
+      };
+    }
     setStandingsMotionAvailable(standingsMotionAvailableNow);
     const receivedAt = Date.now();
     const receivedMonotonicAt = performance.now();
@@ -212,7 +234,7 @@ export function useLiveTiming(
       }
     }
     const countdown = applyMonotonicSessionCountdown(
-      normalizedData,
+      enrichedData,
       sourceId,
       receivedMonotonicAt,
       countdownAnchorRef,

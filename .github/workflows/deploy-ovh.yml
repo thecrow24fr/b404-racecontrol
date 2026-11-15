@@ -74,7 +74,7 @@ jobs:
           test -d out
           test -f out/index.html
           test "$(find out -type f | wc -l)" -gt 0
-          node --test tests/contact-modal-performance.test.mjs tests/live-timing-table-model.test.mjs tests/public-live-timing-api-url.test.mjs tests/public-live-timing-contract.test.mjs
+          node --test tests/contact-modal-performance.test.mjs tests/live-timing-table-model.test.mjs tests/public-live-timing-api-url.test.mjs tests/public-live-timing-contract.test.mjs tests/live-timing-observed-lap-delta.test.mjs tests/live-timing-responsive-table.test.mjs tests/live-timing-empty-state.test.mjs tests/live-timing-viewer-pit-column.test.mjs
 
       - name: Set up Python for safe SFTP upload
         uses: actions/setup-python@v5

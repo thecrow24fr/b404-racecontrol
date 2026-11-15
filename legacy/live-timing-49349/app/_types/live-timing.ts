@@ -158,8 +158,7 @@ export interface StandingEntry {
   sector2: string;
   sector3: string | null;
   inPit: boolean;
-  /** Durée courante ou dernier arrêt, mesurée en mémoire serveur pendant une course. */
-  pitStopDurationSeconds?: number | null;
+
   /** État individuel explicite sous drapeau jaune, lorsque la source le fournit. */
   underYellow?: boolean | null;
   status: DriverStatus;

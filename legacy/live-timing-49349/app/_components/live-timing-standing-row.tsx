@@ -20,8 +20,6 @@ interface StandingRowProps {
   isFastestLap?: boolean;
   sessionPhase?: SessionPhase;
   speedMetric?: "max" | "average";
-  pitTimerNow?: number;
-  snapshotReceivedMonotonicAt?: number | null;
   onOpenLapHistory?: () => void;
 }
 
@@ -29,14 +27,6 @@ function formatMaxSpeed(maxSpeedKmh: number | null | undefined): string {
   return typeof maxSpeedKmh === "number" && Number.isFinite(maxSpeedKmh) && maxSpeedKmh >= 0
     ? String(Math.round(maxSpeedKmh))
     : "—";
-}
-
-function formatPitStopDuration(seconds: number | null | undefined): string {
-  if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds < 0) return "—";
-  const totalSeconds = Math.floor(seconds + Number.EPSILON);
-  const minutes = Math.floor(totalSeconds / 60);
-  const remainingSeconds = String(totalSeconds % 60).padStart(2, "0");
-  return `${minutes}:${remainingSeconds}`;
 }
 
 function statusPresentation(entry: StandingEntry): {
@@ -112,19 +102,7 @@ function NativeTyreCompound({ value, axle }: { value: string | null | undefined;
  * Ligne du classement — affiche uniquement les données prouvées par le DTO
  * public et conserve les valeurs absentes sous la forme « — ».
  */
-export function StandingRow({ entry, isFastestLap = false, sessionPhase, speedMetric = "max", pitTimerNow = 0, snapshotReceivedMonotonicAt, onOpenLapHistory }: StandingRowProps) {
-  const isTerminalStatus = entry.status === "dnf" || entry.status === "out";
-  const reportedPitDuration = entry.pitStopDurationSeconds;
-  const pitDurationForDisplay = isTerminalStatus
-    ? null
-    : entry.inPit
-      && typeof reportedPitDuration === "number"
-      && Number.isFinite(reportedPitDuration)
-      && reportedPitDuration >= 0
-      && typeof snapshotReceivedMonotonicAt === "number"
-      ? reportedPitDuration + Math.max(0, (pitTimerNow - snapshotReceivedMonotonicAt) / 1000)
-      : reportedPitDuration;
-
+export function StandingRow({ entry, isFastestLap = false, sessionPhase, speedMetric = "max", onOpenLapHistory }: StandingRowProps) {
   const evolution = qualificationEvolution({
     sessionPhase,
     startingPosition: entry.startingPosition,
@@ -185,7 +163,7 @@ export function StandingRow({ entry, isFastestLap = false, sessionPhase, speedMe
 
       {/* Évolution par rapport à la qualification */}
       <td
-        className="px-2 py-2.5 align-middle text-center sm:px-3"
+        className="hidden px-2 py-2.5 align-middle text-center sm:px-3 xl:table-cell"
         title={evolutionAria}
         aria-label={evolutionAria}
       >
@@ -224,7 +202,7 @@ export function StandingRow({ entry, isFastestLap = false, sessionPhase, speedMe
       </td>
 
       {/* Classe — palette partagée avec la carte Progression Live */}
-      <td data-column="classe" className="px-2 py-2.5 align-middle text-center">
+      <td data-column="classe" className="hidden px-2 py-2.5 align-middle text-center lg:table-cell">
         <span
           className="inline-flex max-w-[9rem] items-center rounded-md border px-2 py-1 text-[10px] font-black uppercase tracking-[0.08em]"
           style={{
@@ -283,7 +261,7 @@ export function StandingRow({ entry, isFastestLap = false, sessionPhase, speedMe
       </td>
 
       {/* Arrêts */}
-      <td className="px-2 py-2.5 align-middle text-center">
+      <td className="hidden px-2 py-2.5 align-middle text-center xl:table-cell">
         <span className="text-sm tabular-nums text-gray-300">{entry.pitStops}</span>
       </td>
 
@@ -322,24 +300,24 @@ export function StandingRow({ entry, isFastestLap = false, sessionPhase, speedMe
           ) : null}
         </div>
       </td>
-      <td data-column="sector-s1" className="px-2 py-2.5 align-middle text-center">
+      <td data-column="sector-s1" className="hidden px-2 py-2.5 align-middle text-center 2xl:table-cell">
         <span className="block whitespace-nowrap font-mono text-xs font-bold tabular-nums text-purple-300" title="Meilleur S1 individuel">{entry.sector1 || "—"}</span>
         <span className="block whitespace-nowrap font-mono text-sm tabular-nums text-blue-400" title="S1 du tour en cours ou dernier tour terminé">{entry.progressiveSector1 ?? "—"}</span>
       </td>
-      <td data-column="sector-s2" className="px-2 py-2.5 align-middle text-center">
+      <td data-column="sector-s2" className="hidden px-2 py-2.5 align-middle text-center 2xl:table-cell">
         <span className="block whitespace-nowrap font-mono text-xs font-bold tabular-nums text-purple-300" title="Meilleur S2 individuel">{entry.sector2 || "—"}</span>
         <span className="block whitespace-nowrap font-mono text-sm tabular-nums text-blue-400" title="S2 du tour en cours ou dernier tour terminé">{entry.progressiveSector2 ?? "—"}</span>
       </td>
-      <td data-column="sector-s3" className="px-2 py-2.5 align-middle text-center">
+      <td data-column="sector-s3" className="hidden px-2 py-2.5 align-middle text-center 2xl:table-cell">
         <span className="block whitespace-nowrap font-mono text-xs font-bold tabular-nums text-purple-300" title="Meilleur S3 individuel">{entry.sector3 || "—"}</span>
         <span className="block whitespace-nowrap font-mono text-sm tabular-nums text-blue-400" title="S3 du dernier tour terminé">{entry.progressiveSector3 ?? "—"}</span>
       </td>
-      <td data-column="temps-optimal" className="px-2 py-2.5 align-middle text-center">
+      <td data-column="temps-optimal" className="hidden px-2 py-2.5 align-middle text-center 2xl:table-cell">
         <span className="whitespace-nowrap font-mono text-sm font-bold tabular-nums text-orange-300" title="Somme théorique des meilleurs secteurs individuels, pas nécessairement un tour réalisé">{optimalLap ?? "—"}</span>
       </td>
 
       {/* Vitesse maximale observée : Vehicle.carVelocity native, m/s convertis en km/h. */}
-      <td data-column="vmax" data-speed-metric={speedMetric} className="px-2 py-2.5 align-middle text-center">
+      <td data-column="vmax" data-speed-metric={speedMetric} className="hidden px-2 py-2.5 align-middle text-center 2xl:table-cell">
         <span
           className={`font-mono text-xs tabular-nums ${shownSpeed === "—" ? "text-gray-500" : "text-cyan-200"}`}
           title={speedTitle}
@@ -349,25 +327,12 @@ export function StandingRow({ entry, isFastestLap = false, sessionPhase, speedMe
       </td>
 
       {/* Pneus avant/arrière : deux emplacements séparés, N/D sans champ natif Swagger. */}
-      <td data-column="pneus" className="px-2 py-2.5 align-middle text-center">
+      <td data-column="pneus" className="hidden px-2 py-2.5 align-middle text-center 2xl:table-cell">
         <div className="flex min-w-[7rem] items-center justify-center gap-1">
           <NativeTyreCompound value={entry.frontTyreCompound} axle="AV" />
           <NativeTyreCompound value={entry.rearTyreCompound} axle="AR" />
         </div>
       </td>
-
-
-      {/* Temps d’arrêt : visible uniquement en course. */}
-      {sessionPhase === "race" && (
-        <td data-column="temps-arret" className="px-2 py-2.5 align-middle text-center">
-          <span
-            className="whitespace-nowrap font-mono text-xs font-bold tabular-nums text-cyan-200"
-            title={entry.inPit ? "Durée de l’arrêt en cours" : "Durée du dernier arrêt"}
-          >
-            {formatPitStopDuration(pitDurationForDisplay)}
-          </span>
-        </td>
-      )}
 
       {/* Statut réel du pilote, distinct de l’écart Leader */}
       <td data-column="statut" className="px-2 py-2.5 align-middle text-right">

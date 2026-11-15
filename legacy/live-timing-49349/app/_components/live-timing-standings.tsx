@@ -14,6 +14,7 @@ import { useState } from "react";
 import type { Flag, ServerInfo, SessionPhase, StandingEntry } from "../_types/live-timing";
 import type { LiveTimingSourceId } from "../_services/public-live-timing-provider";
 import { formatSessionDisplayLabel } from "../_services/live-timing-session-labels";
+import { emptyStandingsPresentation } from "../_services/live-timing-empty-state.mjs";
 import { bestLapEntry } from "../_services/live-timing-best-lap.mjs";
 import { orderStandingsForPhase } from "../_services/live-timing-standings-order.mjs";
 import { raceProgress } from "../_services/live-timing-race-progress.mjs";
@@ -28,8 +29,6 @@ interface StandingsTableProps {
   flags: Flag[];
   sessionName?: string;
   sessionPhase?: SessionPhase;
-  pitTimerNow: number;
-  snapshotReceivedMonotonicAt: number | null;
 }
 
 function rankingSessionLabel(sessionName?: string, sessionPhase?: SessionPhase): string {
@@ -64,30 +63,37 @@ export function StandingsTable({
   flags,
   sessionName,
   sessionPhase,
-  pitTimerNow,
-  snapshotReceivedMonotonicAt,
 }: StandingsTableProps) {
   const [lapHistoryEntry, setLapHistoryEntry] = useState<StandingEntry | null>(null);
   const [speedMetric, setSpeedMetric] = useState<"max" | "average">("max");
   if (standings.length === 0) {
+    const emptyState = emptyStandingsPresentation(server.status);
     return (
       <section className="border-b border-white/10 bg-[#06101d]">
         <div role="status" aria-live="polite" className="mx-auto flex max-w-7xl flex-col items-center px-6 py-20 text-center">
           <Timer className="mx-auto h-12 w-12 text-gray-600" />
           <p className="mt-4 text-lg font-bold text-gray-400">
-            Aucune donnée de classement disponible
+            {emptyState.title}
           </p>
-          <p className="mt-2 inline-flex items-center gap-2 text-sm text-gray-400">
-            <span>Chargement du classement</span>
-            <span aria-hidden="true" className="inline-flex items-center gap-1.5">
-              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-orange-300" />
-              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-orange-300 [animation-delay:150ms]" />
-              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-orange-300 [animation-delay:300ms]" />
-            </span>
-          </p>
-          <p className="mt-2 max-w-3xl text-sm text-gray-500">
-            Le classement apparaîtra automatiquement lorsque la session sera active.
-          </p>
+          {emptyState.mode === "waiting" ? (
+            <p className="mt-2 max-w-3xl text-sm text-gray-500">
+              {emptyState.description}
+            </p>
+          ) : (
+            <>
+              <p className="mt-2 inline-flex items-center gap-2 text-sm text-gray-400">
+                <span>Chargement du classement</span>
+                <span aria-hidden="true" className="inline-flex items-center gap-1.5">
+                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-orange-300" />
+                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-orange-300 [animation-delay:150ms]" />
+                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-orange-300 [animation-delay:300ms]" />
+                </span>
+              </p>
+              <p className="mt-2 max-w-3xl text-sm text-gray-500">
+                {emptyState.description}
+              </p>
+            </>
+          )}
         </div>
       </section>
     );
@@ -169,55 +175,50 @@ export function StandingsTable({
           </div>
         )}
 
-        {/* Tableau responsive : la largeur permet de consulter toutes les colonnes par défilement horizontal. */}
+        {/* Les colonnes secondaires apparaissent lorsque l’écran offre assez de largeur. */}
         <div className="overflow-x-auto rounded-2xl border border-white/10">
-          <table className="w-full min-w-[1980px] table-fixed">
+          <table className="w-full min-w-0 table-fixed">
             <colgroup>
               <col style={{ width: "5%" }} />
-              <col style={{ width: "4%" }} />
+              <col className="hidden xl:table-column" style={{ width: "4%" }} />
               <col style={{ width: "7.5%" }} />
-              <col style={{ width: "4%" }} />
+              <col className="hidden lg:table-column" style={{ width: "4%" }} />
               <col style={{ width: "7.5%" }} />
               <col style={{ width: "3%" }} />
-              <col style={{ width: "3%" }} />
+              <col className="hidden xl:table-column" style={{ width: "3%" }} />
               <col style={{ width: "4%" }} />
               <col style={{ width: "10%" }} />
-              <col style={{ width: "6%" }} />
-              <col style={{ width: "6%" }} />
-              <col style={{ width: "6%" }} />
-              <col style={{ width: "8%" }} />
-              <col style={{ width: "4%" }} />
-              <col style={{ width: "8%" }} />
-              {sessionPhase === "race" && <col style={{ width: "5%" }} />}
-              <col style={{ width: sessionPhase === "race" ? "9%" : "14%" }} />
+              <col className="hidden 2xl:table-column" style={{ width: "6%" }} />
+              <col className="hidden 2xl:table-column" style={{ width: "6%" }} />
+              <col className="hidden 2xl:table-column" style={{ width: "6%" }} />
+              <col className="hidden 2xl:table-column" style={{ width: "8%" }} />
+              <col className="hidden 2xl:table-column" style={{ width: "4%" }} />
+              <col className="hidden 2xl:table-column" style={{ width: "8%" }} />
+              <col style={{ width: "14%" }} />
             </colgroup>
             <thead>
               <tr className="border-b border-white/10 bg-[#0b1728]">
                 <Th rowSpan={2} className="sticky left-0 z-10 w-16 bg-[#0b1728] text-left">Pos.</Th>
-                <Th rowSpan={2} className="w-24 text-center">Évol.<span className="block text-[9px] tracking-normal">vs qualif.</span></Th>
+                <Th rowSpan={2} className="hidden w-24 text-center xl:table-cell">Évol.<span className="block text-[9px] tracking-normal">vs qualif.</span></Th>
                 <Th rowSpan={2} className="text-center">Pilote</Th>
-                <Th rowSpan={2} className="text-center">Classe</Th>
+                <Th rowSpan={2} className="hidden text-center lg:table-cell">Classe</Th>
                 <Th rowSpan={2} className="text-center">Voiture</Th>
                 <Th rowSpan={2} className="text-center">Tours</Th>
-                <Th rowSpan={2} className="text-center">Arrêts</Th>
+                <Th rowSpan={2} className="hidden text-center xl:table-cell">Arrêts</Th>
                 <Th rowSpan={2} className="text-center">Écart</Th>
                 <Th rowSpan={2} className="text-center"><span className="block text-purple-300">Meilleur tour</span><span className="block text-blue-400">Dernier tour</span></Th>
-                <th colSpan={3} className="px-2 py-2 text-center text-[10px] font-black uppercase tracking-[0.15em]">
+                <th colSpan={3} className="hidden px-2 py-2 text-center text-[10px] font-black uppercase tracking-[0.15em] 2xl:table-cell">
                   <span className="text-purple-300">Meilleur</span><span className="text-gray-500"> / </span><span className="text-blue-400">Dernier</span>
                 </th>
-                <Th rowSpan={2} className="text-center text-orange-300">Optimal</Th>
-                <Th rowSpan={2} className="text-center">{speedMetric === "max" ? "VMax" : "Moyenne"}<span className="block text-[9px] tracking-normal">km/h</span></Th>
-                <Th rowSpan={2} className="text-center">Pneus<span className="block text-[9px] tracking-normal">AV/AR</span></Th>
-                {sessionPhase === "race" && (
-                  <Th rowSpan={2} className="text-center text-cyan-200">Temps d’arrêt</Th>
-                )}
-
+                <Th rowSpan={2} className="hidden text-center text-orange-300 2xl:table-cell">Optimal</Th>
+                <Th rowSpan={2} className="hidden text-center 2xl:table-cell">{speedMetric === "max" ? "VMax" : "Moyenne"}<span className="block text-[9px] tracking-normal">km/h</span></Th>
+                <Th rowSpan={2} className="hidden text-center 2xl:table-cell">Pneus<span className="block text-[9px] tracking-normal">AV/AR</span></Th>
                 <Th rowSpan={2} className="text-right">Statut</Th>
               </tr>
               <tr className="border-b border-white/10 bg-[#0b1728]">
-                <Th className="text-center"><SectorHeading sector={1} flags={flags} /></Th>
-                <Th className="text-center"><SectorHeading sector={2} flags={flags} /></Th>
-                <Th className="text-center"><SectorHeading sector={3} flags={flags} /></Th>
+                <Th className="hidden text-center 2xl:table-cell"><SectorHeading sector={1} flags={flags} /></Th>
+                <Th className="hidden text-center 2xl:table-cell"><SectorHeading sector={2} flags={flags} /></Th>
+                <Th className="hidden text-center 2xl:table-cell"><SectorHeading sector={3} flags={flags} /></Th>
               </tr>
             </thead>
 
@@ -229,8 +230,6 @@ export function StandingsTable({
                   isFastestLap={entry.participantId === bestLap?.entry.participantId}
                   sessionPhase={sessionPhase}
                   speedMetric={speedMetric}
-                  pitTimerNow={pitTimerNow}
-                  snapshotReceivedMonotonicAt={snapshotReceivedMonotonicAt}
                   onOpenLapHistory={() => setLapHistoryEntry(entry)}
                 />
               ))}
