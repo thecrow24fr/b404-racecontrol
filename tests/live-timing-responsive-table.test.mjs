@@ -4,6 +4,12 @@ import test from "node:test";
 
 const standings = readFileSync(new URL("../legacy/live-timing-49349/app/_components/live-timing-standings.tsx", import.meta.url), "utf8");
 const row = readFileSync(new URL("../legacy/live-timing-49349/app/_components/live-timing-standing-row.tsx", import.meta.url), "utf8");
+const track = readFileSync(new URL("../legacy/live-timing-49349/app/_components/live-timing-track-line.tsx", import.meta.url), "utf8");
+
+test("la sortie des stands utilise un fondu de 650 ms", () => {
+  assert.match(track, /const PIT_EXIT_FADE_DURATION_MS = 650;/);
+});
+
 
 test("le tableau n'impose pas une largeur minimale fixe de 1980 px", () => {
   assert.doesNotMatch(standings, /min-w-\\[1980px\\]/);

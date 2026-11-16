@@ -343,7 +343,7 @@ interface MarkerAnimationState {
   startedAt: number;
 }
 
-const PIT_EXIT_FADE_DURATION_MS = 1500;
+const PIT_EXIT_FADE_DURATION_MS = 650;
 
 interface SectorBadgePlacement {
   x: number;
